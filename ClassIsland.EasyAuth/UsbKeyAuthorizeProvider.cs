@@ -83,6 +83,28 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
         _readButton.Click += async (_, _) => await ReadDeviceAsync();
         _saveButton.Click += async (_, _) => await PairAsync();
         _actionButton.Click += async (_, _) => await OnActionClickedAsync();
+        _volumeBox.SelectionChanged += async (_, _) => await RememberSelectedVolumeAsync();
+    }
+
+    /// <summary>记住本次选择的分区，下次打开界面自动预选（体验偏好）</summary>
+    private async Task RememberSelectedVolumeAsync()
+    {
+        var v = SelectedVolume;
+        if (v == null || string.IsNullOrEmpty(v.VolumeGuid))
+        {
+            return;
+        }
+        var stateDir = AppContext.BaseDirectory;
+        await Task.Run(() =>
+        {
+            var st = PluginStateStore.Load(stateDir);
+            if (string.Equals(st.LastVolumeGuid, v.VolumeGuid, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+            st.LastVolumeGuid = v.VolumeGuid;
+            PluginStateStore.Save(stateDir, st);
+        });
     }
 
     /// <summary>设置与界面模式（IsEditingMode 在 GetInstance 时赋值，Loaded 时读取最稳）</summary>
@@ -139,6 +161,10 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
             SetStatus("正在枚举分区…", false);
             var volumes = await Task.Run(DiskInfoService.EnumerateVolumes);
 
+            // 刷新会重建 ItemsSource 导致选中项丢失：先记住刷新前的选择，之后按优先级恢复
+            var prevGuid = SelectedVolume?.VolumeGuid;
+            var prevLetter = SelectedVolume?.DriveLetter;
+
             _volumeBox.ItemTemplate = new FuncDataTemplate<VolumeInfo>((v, _) =>
                 new TextBlock
                 {
@@ -147,25 +173,44 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
                         : $"{v.DriveLetter}:\\ {Describe(v)}"
                 });
             _volumeBox.ItemsSource = volumes;
+            _volumeBox.SelectedItem = null;
 
-            // 预选已配对的分区（按卷 GUID 匹配，兼容盘符漂移）
-            var preset = volumes.FirstOrDefault(v =>
-                !string.IsNullOrEmpty(Settings.PairedVolumeGuid) &&
-                string.Equals(v.VolumeGuid, Settings.PairedVolumeGuid, StringComparison.OrdinalIgnoreCase));
-            if (preset != null)
+            // 恢复优先级：刷新前的选择 -> 已配对的分区 -> 上次选择的分区
+            var target = volumes.FirstOrDefault(v => prevGuid != null &&
+                string.Equals(v.VolumeGuid, prevGuid, StringComparison.OrdinalIgnoreCase))
+                ?? volumes.FirstOrDefault(v => prevLetter != null &&
+                    string.Equals(v.DriveLetter, prevLetter, StringComparison.OrdinalIgnoreCase))
+                ?? volumes.FirstOrDefault(v => !string.IsNullOrEmpty(Settings.PairedVolumeGuid) &&
+                    string.Equals(v.VolumeGuid, Settings.PairedVolumeGuid, StringComparison.OrdinalIgnoreCase));
+            if (target == null)
             {
-                _volumeBox.SelectedItem = preset;
+                var state = await Task.Run(() => PluginStateStore.Load(AppContext.BaseDirectory));
+                if (!string.IsNullOrEmpty(state.LastVolumeGuid))
+                {
+                    target = volumes.FirstOrDefault(v =>
+                        string.Equals(v.VolumeGuid, state.LastVolumeGuid, StringComparison.OrdinalIgnoreCase));
+                }
+            }
+            if (target != null)
+            {
+                _volumeBox.SelectedItem = target;
             }
 
             if (volumes.Count == 0)
             {
                 SetStatus("未找到带盘符的分区，请插入 U 盘后点「刷新」。", true);
             }
+            else if (target == null)
+            {
+                SetStatus($"共 {volumes.Count} 个分区，请选择用于验证的分区。", false);
+            }
+            else if (IsEditingMode)
+            {
+                SetStatus($"已选中 {target.DriveLetter}:\\，点「读取」查看设备信息，「保存配对」写入密钥。", false);
+            }
             else
             {
-                SetStatus(preset != null
-                    ? $"已预选配对分区 {preset.DriveLetter}:\\，点「验证」开始。"
-                    : $"共 {volumes.Count} 个分区，请选择用于验证的分区。", false);
+                SetStatus($"已选中 {target.DriveLetter}:\\，点「验证」开始。", false);
             }
         }
         finally
@@ -307,7 +352,16 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
             return;
         }
 
-        _volumeBox.SelectedItem = fresh;
+        // 选中项要在下拉框列表内重新定位（fresh 来自新枚举，不在当前 ItemsSource 里会显示为空）
+        if (_volumeBox.ItemsSource is IEnumerable<VolumeInfo> items)
+        {
+            var inList = items.FirstOrDefault(v =>
+                string.Equals(v.VolumeGuid, fresh.VolumeGuid, StringComparison.OrdinalIgnoreCase));
+            if (inList != null)
+            {
+                _volumeBox.SelectedItem = inList;
+            }
+        }
         var kvState = KeyVaultService.KeyVaultExists(fresh.VolumeGuid) ? "已存在 key.bin（重新配对会覆盖旧密钥）" : "尚无 key.bin（首次配对将创建）";
         _deviceInfo.Text =
             $"分区：{fresh.DriveLetter}:\\ {Describe(fresh)}\n" +

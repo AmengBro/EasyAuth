@@ -22,6 +22,9 @@ public class PluginState
     [JsonIgnore]
     public bool Exists { get; set; }
 
+    /// <summary>上次在界面上选择的分区（纯体验偏好，与安全无关）</summary>
+    public string LastVolumeGuid { get; set; } = "";
+
     /// <summary>取某卷的期望计数；无记录返回 null（调用方按"接纳当前计数"处理）。</summary>
     public int? GetCounter(string volumeGuid)
     {
