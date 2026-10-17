@@ -5,6 +5,10 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <EnableDynamicLoading>true</EnableDynamicLoading>
+    <SupportedOSPlatforms>windows</SupportedOSPlatforms>
+    <!-- 本插件仅面向 Windows（manifest 声明 supportedOSPlatforms: Windows），
+         WMI/注册表等 Windows 专有 API 的 CA1416 平台警告按设计抑制 -->
+    <NoWarn>$(NoWarn);CA1416</NoWarn>
     <Configurations>Debug;Release</Configurations>
     <CreateCipx>true</CreateCipx>
   </PropertyGroup>
@@ -17,6 +21,7 @@
     <PackageReference Include="ClassIsland.PluginSdk" Version="$(ClassIslandPluginSdkVersion)">
       <ExcludeAssets>runtime; native</ExcludeAssets>
     </PackageReference>
+    <PackageReference Include="System.Management" Version="8.0.0" />
   </ItemGroup>
 
   <ItemGroup>

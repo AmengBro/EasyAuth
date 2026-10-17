@@ -5,7 +5,7 @@ namespace ClassIsland.EasyAuth.Models;
 /// </summary>
 public class UsbKeyAuthSettings
 {
-    /// <summary>配对时记录的磁盘硬件序列号（WMI Win32_DiskDrive.SerialNumber）</summary>
+    /// <summary>配对时记录的磁盘硬件序列号（P/Invoke IOCTL 读取）</summary>
     public string PairedDiskSerial { get; set; } = "";
 
     /// <summary>配对时记录的 key.bin 所在卷 GUID（\\?\Volume{...}\）</summary>
@@ -19,4 +19,24 @@ public class UsbKeyAuthSettings
 
     /// <summary>配对时记录的磁盘型号（仅作界面提示，不参与判定）</summary>
     public string BrandHint { get; set; } = "";
+
+    // ---- 分层开关（复选框）----
+
+    /// <summary>启用磁盘 SN 绑定</summary>
+    public bool EnableSnBinding { get; set; } = true;
+
+    /// <summary>启用卷 GUID 绑定（防同盘异分区克隆）</summary>
+    public bool EnableVolumeGuidBinding { get; set; } = true;
+
+    /// <summary>启用 token 校验</summary>
+    public bool EnableTokenCheck { get; set; } = true;
+
+    /// <summary>启用克隆计数</summary>
+    public bool EnableCloneCounter { get; set; } = true;
+
+    /// <summary>启用品牌提示（仅提示，不参与判定）</summary>
+    public bool EnableBrandHint { get; set; } = true;
+
+    /// <summary>是否至少启用了一种硬绑定（SN/卷GUID/token 至少其一）</summary>
+    public bool HasAnyHardBinding => EnableSnBinding || EnableVolumeGuidBinding || EnableTokenCheck;
 }

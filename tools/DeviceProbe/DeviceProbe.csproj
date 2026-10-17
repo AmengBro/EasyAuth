@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 仅开发机自测用。注意：本沙箱/中文工作区路径下，MSBuild 无法解析含 ".."
+         相对段的项目引用（会误报"项目不存在"），因此这里使用绝对路径。
+         换机器时只需把下面这行改成新的绝对路径。 -->
+    <ProjectReference Include="I:\Data-数据区\应用\自制\easyauth\ClassIsland.EasyAuth\ClassIsland.EasyAuth.csproj" />
+  </ItemGroup>
+
+</Project>
