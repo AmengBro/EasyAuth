@@ -185,6 +185,40 @@ var volInfoC = new VolumeInfo { VolumeGuid = volC, DiskSerialNumber = serialA };
 var guardOk = !AuthVerifier.Pair(settingsNoHard, volInfoC, testMachineGuid, out var guardErr);
 Case("全关硬绑定时配对被护栏拦截", guardOk, guardErr ?? "");
 
+// 13) 多盘计数隔离回归（用户实测复现：在另一个盘配对后原盘计数被清零）
+var stateDir = Path.Combine(testRoot, "state");
+var settingsA = new UsbKeyAuthSettings();
+var settingsB = new UsbKeyAuthSettings();
+
+async Task<AuthVerifyResult> AuthOnDisk(UsbKeyAuthSettings s, VolumeInfo v)
+{
+    var st = PluginStateStore.Load(stateDir);
+    var exp = st.GetCounter(v.VolumeGuid);
+    var res = await AuthVerifier.VerifyAsync(s, v, testMachineGuid, exp);
+    if (res.Success)
+    {
+        st.SetCounter(v.VolumeGuid, res.NewCounter);
+        PluginStateStore.Save(stateDir, st);
+    }
+    return res;
+}
+
+AuthVerifier.Pair(settingsA, volInfoA, testMachineGuid, out _);
+var rA1 = await AuthOnDisk(settingsA, volInfoA);
+Case("盘A 首次认证通过", rA1.Success && rA1.NewCounter == 1, $"new={rA1.NewCounter}");
+
+AuthVerifier.Pair(settingsB, volInfoB, testMachineGuid, out _);
+var rB1 = await AuthOnDisk(settingsB, volInfoB);
+Case("盘B 首次认证通过", rB1.Success && rB1.NewCounter == 1, $"new={rB1.NewCounter}");
+
+var stAfterB = PluginStateStore.Load(stateDir);
+Case("盘B 配对未清零盘A 的计数基线", stAfterB.GetCounter(volA) == 1,
+    $"A={stAfterB.GetCounter(volA)} B={stAfterB.GetCounter(volB)}");
+
+var rA2 = await AuthOnDisk(settingsA, volInfoA);
+Case("盘A 在盘B 配对后仍能认证（实测回归）", rA2.Success,
+    rA2.Success ? $"new={rA2.NewCounter}" : $"失败步骤={rA2.FailedStep} 原因={rA2.FailureReason}");
+
 Console.WriteLine();
 Console.WriteLine($"用例结果：{pass} 通过 / {fail} 失败");
 

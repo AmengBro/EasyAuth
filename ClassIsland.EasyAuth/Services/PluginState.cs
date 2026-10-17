@@ -5,29 +5,41 @@ using System.Text.Json.Serialization;
 namespace ClassIsland.EasyAuth.Services;
 
 /// <summary>
-/// 插件自有状态（存活克隆计数）。
+/// 插件自有状态：按卷隔离的存活克隆计数。
 /// 存放在插件自己的目录（data/Plugins/&lt;插件id&gt;/state.json），
 /// 不写 ClassIsland 的凭据文件——凭据只在编辑模式保存，
 /// 认证时改内存里的 ProviderSettings 不会落盘。
+///
+/// 为什么按卷存字典而不是单个值：key.bin 是每盘一份，计数基线必须与配对的那块盘
+/// 对应。全局单值会导致"在 B 盘配对把 A 盘的基线清零"，A 盘随即认证失败。
 /// </summary>
 public class PluginState
 {
-    /// <summary>当前存活计数（上次成功认证时的值）</summary>
-    public int LiveCounter { get; set; }
-
-    /// <summary>配对时的卷 GUID（信息字段，便于排查）</summary>
-    public string PairedVolumeGuid { get; set; } = "";
+    /// <summary>卷 GUID -&gt; 存活计数（大小写不敏感匹配）</summary>
+    public Dictionary<string, int> Counters { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>状态文件是否已存在（区分"首次"与"计数不符"）</summary>
     [JsonIgnore]
     public bool Exists { get; set; }
+
+    /// <summary>取某卷的期望计数；无记录返回 null（调用方按"接纳当前计数"处理）。</summary>
+    public int? GetCounter(string volumeGuid)
+    {
+        return Counters.TryGetValue(volumeGuid, out var value) ? value : null;
+    }
+
+    /// <summary>写入某卷的存活计数。</summary>
+    public void SetCounter(string volumeGuid, int value)
+    {
+        Counters[volumeGuid] = value;
+    }
 }
 
 public static class PluginStateStore
 {
     public const string StateFileName = "state.json";
 
-    /// <summary>加载状态；文件不存在返回 Exists=false 的空状态。</summary>
+    /// <summary>加载状态；文件不存在（或旧单值格式）返回 Exists=false 的空状态。</summary>
     public static PluginState Load(string stateDir)
     {
         var path = Path.Combine(stateDir, StateFileName);
@@ -35,14 +47,27 @@ public static class PluginStateStore
         {
             if (File.Exists(path))
             {
-                var state = JsonSerializer.Deserialize<PluginState>(File.ReadAllText(path)) ?? new PluginState();
-                state.Exists = true;
-                return state;
+                var state = JsonSerializer.Deserialize<PluginState>(File.ReadAllText(path));
+                if (state != null)
+                {
+                    // 规范化比较器，并过滤空键
+                    var normalized = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var kv in state.Counters)
+                    {
+                        if (!string.IsNullOrWhiteSpace(kv.Key))
+                        {
+                            normalized[kv.Key] = kv.Value;
+                        }
+                    }
+                    state.Counters = normalized;
+                    state.Exists = true;
+                    return state;
+                }
             }
         }
         catch
         {
-            // 损坏当作不存在处理（调用方按首次配对接纳）
+            // 损坏当作不存在处理（调用方按首次接纳）
         }
         return new PluginState();
     }

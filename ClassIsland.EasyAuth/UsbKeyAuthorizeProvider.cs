@@ -248,7 +248,8 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
             var machineGuid = await Task.Run(DiskInfoService.GetMachineGuid);
             var stateDir = AppContext.BaseDirectory;
             var state = await Task.Run(() => PluginStateStore.Load(stateDir));
-            var expected = state.Exists ? state.LiveCounter : (int?)null;
+            // 计数基线按卷隔离：其他盘的配对/认证不会影响本盘
+            var expected = state.GetCounter(fresh.VolumeGuid);
 
             var result = await Task.Run(async () => await AuthVerifier.VerifyAsync(
                 Settings, fresh, machineGuid, expected,
@@ -264,11 +265,11 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
                 _actionButton.IsEnabled = true;
                 var warn = result.CounterWriteBackWarning ? "（计数回写失败，防克隆计数已降级）" : "";
                 SetStatusOk($"验证通过{warn}，点「进入」继续。");
-                await Task.Run(() => PluginStateStore.Save(stateDir, new PluginState
+                await Task.Run(() =>
                 {
-                    LiveCounter = result.NewCounter,
-                    PairedVolumeGuid = fresh.VolumeGuid
-                }));
+                    state.SetCounter(fresh.VolumeGuid, result.NewCounter);
+                    PluginStateStore.Save(stateDir, state);
+                });
             }
             else
             {
@@ -350,12 +351,13 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
             return;
         }
 
-        // 重新配对后重置本机存活计数
-        await Task.Run(() => PluginStateStore.Save(stateDir, new PluginState
+        // 配对后重置【本卷】的存活计数（其他盘的计数不受影响）
+        await Task.Run(() =>
         {
-            LiveCounter = 0,
-            PairedVolumeGuid = volume.VolumeGuid
-        }));
+            var state = PluginStateStore.Load(stateDir);
+            state.SetCounter(volume.VolumeGuid, 0);
+            PluginStateStore.Save(stateDir, state);
+        });
 
         _deviceInfo.Text =
             $"分区：{volume.DriveLetter}:\\ {Describe(volume)}\n" +
