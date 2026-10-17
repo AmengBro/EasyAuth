@@ -2,7 +2,9 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net8.0</TargetFramework>
+    <!-- 自测程序用 net10.0：与 ClassIsland.PluginSdk 传递依赖的
+         System.Text.Json 9.x 绑定兼容（宿主提供更高版本即可满足） -->
+    <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
