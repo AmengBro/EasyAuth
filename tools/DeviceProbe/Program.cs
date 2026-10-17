@@ -121,7 +121,7 @@ var snapshot = File.ReadAllBytes(KeyVaultService.GetKeyVaultPath(volA));
 var r1 = await AuthVerifier.VerifyAsync(settings, volInfoA, testMachineGuid, 0);
 Case("首次认证通过", r1.Success && !r1.CounterWriteBackWarning && r1.NewCounter == 1,
     $"success={r1.Success} warn={r1.CounterWriteBackWarning} new={r1.NewCounter}");
-var payloadAfter = KeyVaultService.ReadKeyVault(volA, testMachineGuid, serialA);
+var payloadAfter = KeyVaultService.ReadKeyVault(volA, testMachineGuid, serialA, out _, out _);
 Case("计数已回写密钥库", payloadAfter?.Counter == 1, $"payload.Counter={payloadAfter?.Counter}");
 
 // 3) 再次认证（计数推进）
@@ -218,6 +218,44 @@ Case("盘B 配对未清零盘A 的计数基线", stAfterB.GetCounter(volA) == 1,
 var rA2 = await AuthOnDisk(settingsA, volInfoA);
 Case("盘A 在盘B 配对后仍能认证（实测回归）", rA2.Success,
     rA2.Success ? $"new={rA2.NewCounter}" : $"失败步骤={rA2.FailedStep} 原因={rA2.FailureReason}");
+
+// 14) Windows 账户绑定（DPAPI）层
+var volD = Path.Combine(testRoot, "VolD");
+Directory.CreateDirectory(volD);
+var volInfoD = new VolumeInfo { VolumeGuid = volD, DiskSerialNumber = serialA, DriveLetter = "X" };
+var settingsBound = new UsbKeyAuthSettings { EnableUserBinding = true };
+var pairBound = AuthVerifier.Pair(settingsBound, volInfoD, testMachineGuid, out var pairBoundErr);
+Case("账户绑定模式配对成功", pairBound, pairBoundErr ?? "");
+var readBound = KeyVaultService.ReadKeyVault(volD, testMachineGuid, serialA, out var boundStatus, out var boundFlag);
+Case("DPAPI 包裹密钥可读且标记为已绑定",
+    readBound != null && boundStatus == KeyVaultReadStatus.Ok && boundFlag,
+    $"status={boundStatus} userBound={boundFlag}");
+await CaseAsync("账户绑定模式下认证通过", settingsBound, volInfoD, testMachineGuid, 0, "OK");
+
+// 未启用账户绑定的密钥文件，在启用该层时应被拒（提示重新配对）
+var settingsRequireBound = CloneSettings(settings);
+settingsRequireBound.EnableUserBinding = true;
+File.WriteAllBytes(KeyVaultService.GetKeyVaultPath(volD), snapshot);
+await CaseAsync("未绑定账户的密钥被账户层拒绝", settingsRequireBound, volInfoD, testMachineGuid, 0, "校验 Windows 账户绑定");
+
+// 计数回写必须保留账户绑定层（否则下次认证会掉层）
+AuthVerifier.Pair(settingsBound, volInfoD, testMachineGuid, out _);
+var rBound1 = await AuthVerifier.VerifyAsync(settingsBound, volInfoD, testMachineGuid, 0);
+var rBound2 = await AuthVerifier.VerifyAsync(settingsBound, volInfoD, testMachineGuid, 1);
+Case("计数回写后账户绑定层仍在（可连续认证）", rBound1.Success && rBound2.Success,
+    $"first={rBound1.Success} second={rBound2.Success}");
+
+// 15) 审计日志
+var auditDir = Path.Combine(testRoot, "audit-state");
+Directory.CreateDirectory(auditDir);
+AuditLogService.Write(auditDir, "PAIR", "X", volD, serialA, "layers=[sn,guid,token,counter]");
+AuditLogService.Write(auditDir, "AUTH-OK", "X", volD, serialA, "new=1");
+AuditLogService.Write(auditDir, "AUTH-FAIL", "Y", volB, serialB, "step=校验克隆计数 reason=计数不符");
+var auditTail = AuditLogService.ReadTail(auditDir);
+Case("审计日志写入三类事件",
+    auditTail.Contains("PAIR") && auditTail.Contains("AUTH-OK") && auditTail.Contains("AUTH-FAIL")
+    && auditTail.Contains("校验克隆计数"), auditTail.Split('\n').Length + " 行");
+Case("审计日志含盘符与SN", auditTail.Contains("drive=X") && auditTail.Contains(serialA));
 
 Console.WriteLine();
 Console.WriteLine($"用例结果：{pass} 通过 / {fail} 失败");

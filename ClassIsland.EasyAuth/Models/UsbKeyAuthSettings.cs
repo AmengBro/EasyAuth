@@ -37,6 +37,13 @@ public class UsbKeyAuthSettings
     /// <summary>启用品牌提示（仅提示，不参与判定）</summary>
     public bool EnableBrandHint { get; set; } = true;
 
+    /// <summary>
+    /// 启用 Windows 账户绑定（DPAPI CurrentUser 包裹密钥文件）。
+    /// 仅当教师使用独占 Windows 账户时才有增益；共享账户下相当于无额外保护。
+    /// 启用后需重新配对（密钥文件从 v1 升级为 v2 容器）。
+    /// </summary>
+    public bool EnableUserBinding { get; set; }
+
     /// <summary>是否至少启用了一种硬绑定（SN/卷GUID/token 至少其一）</summary>
     public bool HasAnyHardBinding => EnableSnBinding || EnableVolumeGuidBinding || EnableTokenCheck;
 }

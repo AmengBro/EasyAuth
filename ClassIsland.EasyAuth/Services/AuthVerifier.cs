@@ -87,16 +87,31 @@ public static class AuthVerifier
         {
             return Fail(result, stepName, "无法读取本机标识（MachineGuid）");
         }
-        var payload = KeyVaultService.ReadKeyVault(volume.VolumeGuid, machineGuid, serial);
+        var payload = KeyVaultService.ReadKeyVault(volume.VolumeGuid, machineGuid, serial,
+            out var kvStatus, out var userBound);
         if (payload == null)
         {
-            return Fail(result, stepName,
-                KeyVaultService.KeyVaultExists(volume.VolumeGuid)
-                    ? "密钥文件无法解密（可能不是本机配对的 U 盘，或文件已损坏）"
-                    : "未检测到密钥文件（该分区上没有 .EasyAuth\\key.bin）");
+            var reason = kvStatus switch
+            {
+                KeyVaultReadStatus.NotFound => "未检测到密钥文件（该分区上没有 .EasyAuth\\key.bin）",
+                KeyVaultReadStatus.UserMismatch => "该密钥盘与当前 Windows 账户不匹配（账户绑定层）",
+                _ => "密钥文件无法解密（可能不是本机配对的 U 盘，或文件已损坏）"
+            };
+            return Fail(result, stepName, reason);
         }
 
-        // 3) token 校验
+        // 3) Windows 账户绑定层（可选，需配对时已启用）
+        if (settings.EnableUserBinding)
+        {
+            stepName = "校验 Windows 账户绑定";
+            await StepAsync(stepName);
+            if (!userBound)
+            {
+                return Fail(result, stepName, "密钥文件未启用 Windows 账户绑定，请重新配对");
+            }
+        }
+
+        // 4) token 校验
         if (settings.EnableTokenCheck)
         {
             stepName = "校验 token";
@@ -153,7 +168,7 @@ public static class AuthVerifier
         {
             stepName = "写入新计数";
             await StepAsync(stepName);
-            if (!KeyVaultService.RewriteCounter(volume.VolumeGuid, payload, result.NewCounter, machineGuid, serial))
+            if (!KeyVaultService.RewriteCounter(volume.VolumeGuid, payload, result.NewCounter, machineGuid, serial, userBound))
             {
                 result.CounterWriteBackWarning = true;
             }
@@ -202,7 +217,7 @@ public static class AuthVerifier
             CreatedAt = DateTimeOffset.Now.ToString("yyyy-MM-ddTHH:mm:sszzz")
         };
 
-        if (!KeyVaultService.CreateKeyVault(volume.VolumeGuid, payload, machineGuid, serial))
+        if (!KeyVaultService.CreateKeyVault(volume.VolumeGuid, payload, machineGuid, serial, settings.EnableUserBinding))
         {
             error = "写入密钥文件失败（请检查 U 盘是否可写）";
             return false;

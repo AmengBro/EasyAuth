@@ -31,7 +31,9 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
     private readonly CheckBox _chkToken = new() { Content = "token 校验（防复制密钥文件）", Margin = new Thickness(0, 2, 0, 0) };
     private readonly CheckBox _chkCounter = new() { Content = "克隆计数（防过期克隆盘）", Margin = new Thickness(0, 2, 0, 0) };
     private readonly CheckBox _chkBrand = new() { Content = "品牌提示（仅提示，不参与判定）", Margin = new Thickness(0, 2, 0, 0) };
+    private readonly CheckBox _chkUser = new() { Content = "Windows 账户绑定（DPAPI，需重新配对）", Margin = new Thickness(0, 2, 0, 0) };
     private readonly Button _readButton = new() { Content = "读取", Margin = new Thickness(0, 8, 0, 0) };
+    private readonly Button _auditButton = new() { Content = "查看审计日志", Margin = new Thickness(8, 0, 0, 0) };
     private readonly TextBlock _deviceInfo = new() { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 0) };
     private readonly Button _saveButton = new() { Content = "保存配对", HorizontalAlignment = HorizontalAlignment.Stretch };
 
@@ -66,7 +68,12 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
         _editPanel.Children.Add(_chkToken);
         _editPanel.Children.Add(_chkCounter);
         _editPanel.Children.Add(_chkBrand);
-        _editPanel.Children.Add(_readButton);
+        _editPanel.Children.Add(_chkUser);
+        var readRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
+        readRow.Children.Add(_readButton);
+        Grid.SetColumn(_auditButton, 1);
+        readRow.Children.Add(_auditButton);
+        _editPanel.Children.Add(readRow);
         _editPanel.Children.Add(_deviceInfo);
         _editPanel.Children.Add(_saveButton);
         root.Children.Add(_editPanel);
@@ -83,6 +90,8 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
         _readButton.Click += async (_, _) => await ReadDeviceAsync();
         _saveButton.Click += async (_, _) => await PairAsync();
         _actionButton.Click += async (_, _) => await OnActionClickedAsync();
+        _auditButton.Click += (_, _) => _deviceInfo.Text = "审计日志（最近 15 条）：\n" +
+            AuditLogService.ReadTail(AppContext.BaseDirectory);
         _volumeBox.SelectionChanged += async (_, _) => await RememberSelectedVolumeAsync();
     }
 
@@ -127,6 +136,7 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
             _chkToken.IsChecked = Settings.EnableTokenCheck;
             _chkCounter.IsChecked = Settings.EnableCloneCounter;
             _chkBrand.IsChecked = Settings.EnableBrandHint;
+            _chkUser.IsChecked = Settings.EnableUserBinding;
             SetStatus(IsPaired() ? $"当前配对盘 SN：{Settings.PairedDiskSerial}" : "尚未配对：请选择分区后点「读取」，确认设备信息无误再点「保存配对」。", false);
         }
         else
@@ -315,12 +325,18 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
                     state.SetCounter(fresh.VolumeGuid, result.NewCounter);
                     PluginStateStore.Save(stateDir, state);
                 });
+                await Task.Run(() => AuditLogService.Write(stateDir, "AUTH-OK",
+                    fresh.DriveLetter, fresh.VolumeGuid, fresh.DiskSerialNumber,
+                    $"layers=[{(Settings.EnableUserBinding ? "user," : "")}{(Settings.EnableTokenCheck ? "token," : "")}{(Settings.EnableSnBinding ? "sn," : "")}{(Settings.EnableVolumeGuidBinding ? "guid," : "")}{(Settings.EnableCloneCounter ? "counter" : "")}] new={result.NewCounter}"));
             }
             else
             {
                 _actionButton.Content = "验证";
                 _actionButton.IsEnabled = true;
                 SetStatus($"✗ {result.FailedStep}：{result.FailureReason}", true);
+                await Task.Run(() => AuditLogService.Write(stateDir, "AUTH-FAIL",
+                    fresh.DriveLetter, fresh.VolumeGuid, fresh.DiskSerialNumber,
+                    $"step={result.FailedStep} reason={result.FailureReason}"));
             }
         }
         finally
@@ -387,6 +403,7 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
         Settings.EnableTokenCheck = _chkToken.IsChecked ?? true;
         Settings.EnableCloneCounter = _chkCounter.IsChecked ?? true;
         Settings.EnableBrandHint = _chkBrand.IsChecked ?? false;
+        Settings.EnableUserBinding = _chkUser.IsChecked ?? false;
 
         if (!Settings.HasAnyHardBinding)
         {
@@ -412,6 +429,9 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
             state.SetCounter(volume.VolumeGuid, 0);
             PluginStateStore.Save(stateDir, state);
         });
+        await Task.Run(() => AuditLogService.Write(stateDir, "PAIR",
+            volume.DriveLetter, volume.VolumeGuid, volume.DiskSerialNumber,
+            $"userBound={Settings.EnableUserBinding} layers=[{(Settings.EnableSnBinding ? "sn," : "")}{(Settings.EnableVolumeGuidBinding ? "guid," : "")}{(Settings.EnableTokenCheck ? "token," : "")}{(Settings.EnableCloneCounter ? "counter" : "")}]"));
 
         _deviceInfo.Text =
             $"分区：{volume.DriveLetter}:\\ {Describe(volume)}\n" +
