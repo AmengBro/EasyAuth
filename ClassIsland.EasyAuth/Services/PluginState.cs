@@ -22,8 +22,30 @@ public class PluginState
     [JsonIgnore]
     public bool Exists { get; set; }
 
+    /// <summary>单卷的配对信息</summary>
+    public class PairingRecord
+    {
+        /// <summary>该卷 key.bin 内 token 的 SHA-256</summary>
+        public string TokenHash { get; set; } = "";
+    }
+
     /// <summary>上次在界面上选择的分区（纯体验偏好，与安全无关）</summary>
     public string LastVolumeGuid { get; set; } = "";
+
+    /// <summary>卷 GUID -&gt; 配对信息（多分区模式下每卷各自独立 token）</summary>
+    public Dictionary<string, PairingRecord> Pairings { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>取某卷的 token 哈希；无记录返回 null</summary>
+    public string? GetTokenHash(string volumeGuid)
+    {
+        return Pairings.TryGetValue(volumeGuid, out var r) ? r.TokenHash : null;
+    }
+
+    /// <summary>写入某卷的 token 哈希</summary>
+    public void SetTokenHash(string volumeGuid, string tokenHash)
+    {
+        Pairings[volumeGuid] = new PairingRecord { TokenHash = tokenHash };
+    }
 
     /// <summary>取某卷的期望计数；无记录返回 null（调用方按"接纳当前计数"处理）。</summary>
     public int? GetCounter(string volumeGuid)
@@ -63,6 +85,16 @@ public static class PluginStateStore
                         }
                     }
                     state.Counters = normalized;
+
+                    var pairings = new Dictionary<string, PluginState.PairingRecord>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var kv in state.Pairings)
+                    {
+                        if (!string.IsNullOrWhiteSpace(kv.Key) && kv.Value != null)
+                        {
+                            pairings[kv.Key] = kv.Value;
+                        }
+                    }
+                    state.Pairings = pairings;
                     state.Exists = true;
                     return state;
                 }

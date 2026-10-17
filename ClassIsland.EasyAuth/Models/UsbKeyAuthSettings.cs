@@ -46,4 +46,16 @@ public class UsbKeyAuthSettings
 
     /// <summary>是否至少启用了一种硬绑定（SN/卷GUID/token 至少其一）</summary>
     public bool HasAnyHardBinding => EnableSnBinding || EnableVolumeGuidBinding || EnableTokenCheck;
+
+    /// <summary>
+    /// 多分区同时校验：下拉框展示设备名，选中设备即校验其全部合格分区
+    /// （总容量 ≥32MB 且可用 ≥16MB），任一分区失败即认证失败。
+    /// </summary>
+    public bool MultiPartitionMode { get; set; }
+
+    /// <summary>
+    /// 授权卷 GUID 列表（多分区模式下凭据要求这些卷全部通过）。
+    /// 空表示沿用主卷（PairedVolumeGuid），兼容单分区模式。
+    /// </summary>
+    public List<string> AuthorizedVolumeGuids { get; set; } = [];
 }

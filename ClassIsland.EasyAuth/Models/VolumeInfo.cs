@@ -29,6 +29,15 @@ public class VolumeInfo
     /// <summary>所在物理磁盘的型号（读取失败为 null）</summary>
     public string? DiskModel { get; set; }
 
+    /// <summary>分区总容量（字节，读取失败为 null）</summary>
+    public long? TotalSize { get; set; }
+
+    /// <summary>分区可用空间（字节，读取失败为 null）</summary>
+    public long? AvailableFreeSpace { get; set; }
+
+    /// <summary>驱动器类型（Removable/Fixed/Network 等，读取失败为 null）</summary>
+    public string? DriveType { get; set; }
+
     /// <summary>设备信息是否完整读取（SN 非空）</summary>
     public bool InfoComplete => !string.IsNullOrWhiteSpace(DiskSerialNumber);
 }

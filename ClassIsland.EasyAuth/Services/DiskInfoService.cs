@@ -22,6 +22,12 @@ public static class DiskInfoService
     private const uint FileShareWrite = 0x00000002;
     private const uint OpenExisting = 3;
 
+    /// <summary>多分区校验的容量门槛：分区总容量小于 32MB 视为系统保留分区，丢弃</summary>
+    public const long MinVolumeTotalBytes = 32L * 1024 * 1024;
+
+    /// <summary>多分区校验的容量门槛：分区可用空间小于 16MB 视为不可用，丢弃</summary>
+    public const long MinVolumeFreeBytes = 16L * 1024 * 1024;
+
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern SafeFileHandle CreateFileW(
         string lpFileName,
@@ -80,11 +86,18 @@ public static class DiskInfoService
             };
             try
             {
-                info.VolumeLabel = new DriveInfo(info.DriveLetter + ":\\").VolumeLabel;
+                var drive = new DriveInfo(info.DriveLetter + ":\\");
+                if (drive.IsReady)
+                {
+                    info.VolumeLabel = drive.VolumeLabel;
+                    info.TotalSize = drive.TotalSize;
+                    info.AvailableFreeSpace = drive.AvailableFreeSpace;
+                }
+                info.DriveType = drive.DriveType.ToString();
             }
             catch
             {
-                // 卷未就绪时卷标读不到，忽略
+                // 卷未就绪时卷标/容量读不到，忽略
             }
 
             var disk = GetDiskByLetter(info.DriveLetter);
@@ -95,6 +108,55 @@ public static class DiskInfoService
         }
 
         return volumes;
+    }
+
+    /// <summary>
+    /// 设备视图：按磁盘序列号把分区归组，过滤掉过小的分区（系统保留/恢复分区）。
+    /// 多分区同时校验模式下由界面展示该列表。
+    /// </summary>
+    public static List<DiskGroupInfo> EnumerateDiskGroups()
+    {
+        var groups = new List<DiskGroupInfo>();
+        var bySerial = new Dictionary<string, DiskGroupInfo>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var v in EnumerateVolumes())
+        {
+            if (string.IsNullOrWhiteSpace(v.DiskSerialNumber))
+            {
+                // 读不到序列号的卷无法归组，只在单分区模式下可用
+                continue;
+            }
+            var serial = v.DiskSerialNumber;
+            if (!bySerial.TryGetValue(serial, out var group))
+            {
+                group = new DiskGroupInfo
+                {
+                    DiskSerial = serial,
+                    Model = string.IsNullOrWhiteSpace(v.DiskModel) ? "未知设备" : v.DiskModel!
+                };
+                bySerial[serial] = group;
+                groups.Add(group);
+            }
+
+            var tooSmall =
+                (v.TotalSize.HasValue && v.TotalSize.Value < MinVolumeTotalBytes) ||
+                (v.AvailableFreeSpace.HasValue && v.AvailableFreeSpace.Value < MinVolumeFreeBytes);
+            if (tooSmall)
+            {
+                group.SkippedVolumes.Add(v);
+            }
+            else
+            {
+                group.Volumes.Add(v);
+            }
+        }
+
+        // 可移动设备排前面（U 盘优先），其次按分区数多的排
+        return groups
+            .Where(g => g.Volumes.Count > 0)
+            .OrderByDescending(g => g.Volumes.Any(v => v.DriveType == "Removable"))
+            .ThenByDescending(g => g.Volumes.Count)
+            .ToList();
     }
 
     /// <summary>

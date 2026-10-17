@@ -257,6 +257,65 @@ Case("审计日志写入三类事件",
     && auditTail.Contains("校验克隆计数"), auditTail.Split('\n').Length + " 行");
 Case("审计日志含盘符与SN", auditTail.Contains("drive=X") && auditTail.Contains(serialA));
 
+// 16) 多分区同时校验
+var multiState = new PluginState();
+var settingsMulti = new UsbKeyAuthSettings { MultiPartitionMode = true };
+var volM1 = Path.Combine(testRoot, "Multi1");
+var volM2 = Path.Combine(testRoot, "Multi2");
+Directory.CreateDirectory(volM1);
+Directory.CreateDirectory(volM2);
+var multiV1 = new VolumeInfo { VolumeGuid = volM1, DiskSerialNumber = serialA, DriveLetter = "M", DiskModel = "仿真设备" };
+var multiV2 = new VolumeInfo { VolumeGuid = volM2, DiskSerialNumber = serialA, DriveLetter = "N", DiskModel = "仿真设备" };
+
+var multiPairOk = AuthVerifier.PairVolumes(settingsMulti, [multiV1, multiV2], testMachineGuid, multiState, out var multiPairErr);
+Case("多分区配对（两卷各自写 key.bin）", multiPairOk, multiPairErr ?? "");
+Case("授权列表收录两个分区", settingsMulti.AuthorizedVolumeGuids.Count == 2,
+    string.Join(",", settingsMulti.AuthorizedVolumeGuids.Select(g => g.Contains("Multi") ? Path.GetFileName(g.TrimEnd('\\')) : g)));
+Case("两卷 token 相互独立",
+    multiState.GetTokenHash(volM1) != multiState.GetTokenHash(volM2));
+
+// 模拟 Provider 的状态持久化：验证成功后把各卷新计数写回
+async Task<AuthVerifyResult> AuthMultiAsync(params VolumeInfo[] vs)
+{
+    var r = await AuthVerifier.VerifyVolumesAsync(new VerifyOptions
+    {
+        Settings = settingsMulti, Volumes = vs,
+        MachineGuid = testMachineGuid, State = multiState
+    });
+    if (r.Success)
+    {
+        foreach (var kv in r.NewCounters)
+        {
+            multiState.SetCounter(kv.Key, kv.Value);
+        }
+    }
+    return r;
+}
+
+var multiR1 = await AuthMultiAsync(multiV1, multiV2);
+Case("多分区认证全部通过", multiR1.Success, $"计数={string.Join("/", multiR1.NewCounters.Select(c => c.Value))}");
+
+// 把第 2 个分区的 key.bin 删掉 → 整体应失败（且指出该分区）
+Directory.Delete(Path.Combine(volM2, KeyVaultService.KeyVaultDirName), true);
+var multiR2 = await AuthMultiAsync(multiV1, multiV2);
+Case("缺一个分区即整体失败", !multiR2.Success && multiR2.FailedVolumeGuid == volM2,
+    $"失败卷={multiR2.FailedVolumeGuid?.EndsWith("Multi2") ?? false} 步骤={multiR2.FailedStep}");
+
+// 把 M: 的 key.bin 复制到另一分区 → 卷标识层必须拦住（多分区模式下也拦）
+Directory.CreateDirectory(volM2);
+CopyDirectory(Path.Combine(volM1, KeyVaultService.KeyVaultDirName),
+    Path.Combine(volM2, KeyVaultService.KeyVaultDirName));
+var multiR3 = await AuthMultiAsync(multiV1, multiV2);
+Case("复制 key.bin 到另一分区被拦下（token/卷标识层）",
+    !multiR3.Success && multiR3.FailedVolumeGuid == volM2 && multiR3.FailedStep != null,
+    $"失败卷={multiR3.FailedVolumeGuid?.EndsWith("Multi2") ?? false} 步骤={multiR3.FailedStep}");
+
+// 设备分组：同 SN 的两个分区归为一组，小分区被过滤
+var groups = DiskInfoService.EnumerateDiskGroups();
+var sameDisk = groups.FirstOrDefault(g => g.Volumes.Count + g.SkippedVolumes.Count >= 2);
+Case("同盘分区归入同一设备组", sameDisk != null,
+    sameDisk == null ? "" : $"设备={sameDisk.Model[..Math.Min(18, sameDisk.Model.Length)]} 合格={sameDisk.Volumes.Count} 忽略={sameDisk.SkippedVolumes.Count}");
+
 Console.WriteLine();
 Console.WriteLine($"用例结果：{pass} 通过 / {fail} 失败");
 
