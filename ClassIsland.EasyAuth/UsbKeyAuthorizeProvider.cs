@@ -43,10 +43,13 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
     private bool _uiModeApplied;
     private bool _suppressMultiChange;
 
-    /// <summary>当前是否为多分区（设备）模式</summary>
-    private bool MultiMode => IsEditingMode
-        ? (_chkMulti.IsChecked ?? Settings.MultiPartitionMode)
-        : Settings.MultiPartitionMode;
+    /// <summary>
+    /// 当前是否为多分区（设备）模式。
+    /// 只读 Settings（纯数据），不读 Avalonia 控件——本属性会在 Task.Run 的
+    /// 线程池线程里被访问，读控件会抛 "Call from invalid thread"。
+    /// 复选框勾选变化时已同步写回 Settings.MultiPartitionMode。
+    /// </summary>
+    private bool MultiMode => Settings.MultiPartitionMode;
 
     public UsbKeyAuthorizeProvider()
     {
@@ -430,6 +433,8 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
             var machineGuid = await Task.Run(DiskInfoService.GetMachineGuid);
             var stateDir = AppContext.BaseDirectory;
             var state = await Task.Run(() => PluginStateStore.Load(stateDir));
+            // 审计标签在 UI 线程算好：Task.Run 内不得触碰任何 UI 状态
+            var modeTag = Settings.MultiPartitionMode ? "multi" : "single";
 
             var result = await Task.Run(async () => await AuthVerifier.VerifyVolumesAsync(new VerifyOptions
             {
@@ -460,7 +465,7 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
                 });
                 await Task.Run(() => AuditLogService.Write(stateDir, "AUTH-OK",
                     displayName, freshTargets[0].VolumeGuid, freshTargets[0].DiskSerialNumber,
-                    $"mode={(MultiMode ? "multi" : "single")} volumes={freshTargets.Count} layers=[{(Settings.EnableUserBinding ? "user," : "")}{(Settings.EnableTokenCheck ? "token," : "")}{(Settings.EnableSnBinding ? "sn," : "")}{(Settings.EnableVolumeGuidBinding ? "guid," : "")}{(Settings.EnableCloneCounter ? "counter" : "")}] new={result.NewCounter}"));
+                    $"mode={modeTag} volumes={freshTargets.Count} layers=[{(Settings.EnableUserBinding ? "user," : "")}{(Settings.EnableTokenCheck ? "token," : "")}{(Settings.EnableSnBinding ? "sn," : "")}{(Settings.EnableVolumeGuidBinding ? "guid," : "")}{(Settings.EnableCloneCounter ? "counter" : "")}] new={result.NewCounter}"));
             }
             else
             {
@@ -469,7 +474,7 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
                 SetStatus($"✗ {result.FailedStep}：{result.FailureReason}", true);
                 await Task.Run(() => AuditLogService.Write(stateDir, "AUTH-FAIL",
                     displayName, result.FailedVolumeGuid, freshTargets[0].DiskSerialNumber,
-                    $"mode={(MultiMode ? "multi" : "single")} step={result.FailedStep} reason={result.FailureReason}"));
+                    $"mode={modeTag} step={result.FailedStep} reason={result.FailureReason}"));
             }
         }
         finally
