@@ -674,23 +674,42 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
     }
 
     /// <summary>凭据保存前的完整性校验（编辑模式）。
-    /// 失败原因写入审计日志——ClassIsland 只回一句"设置无效"，靠日志定位。</summary>
+    /// 判定依据：必须有硬绑定层；配对事实以"U 盘 key.bin + 插件状态"为准，
+    /// 凭据里的 PairedDiskSerial/TokenHash 只是索引——多分区配对时它们可能
+    /// 尚未与校验时读到的实例同步，死盯字段会导致明明配对成功却拒绝保存。
+    /// 失败原因写入审计日志，便于事后定位。</summary>
     public override bool ValidateAuthorizeSettings()
     {
         var hard = Settings.HasAnyHardBinding;
-        var paired = IsPaired();
+        var paired = IsPaired() || HasPairingFact();
         var ok = hard && paired;
         try
         {
+            var state = PluginStateStore.Load(AppContext.BaseDirectory);
             AuditLogService.Write(AppContext.BaseDirectory, ok ? "VALIDATE-OK" : "VALIDATE-FAIL",
-                detail: $"hardBinding={hard} paired={paired} sn='{Settings.PairedDiskSerial}' " +
-                        $"tokenHashLen={Settings.TokenHash.Length} " +
-                        $"authVols={Settings.AuthorizedVolumeGuids?.Count ?? -1} multi={Settings.MultiPartitionMode}");
+                detail: $"hardBinding={hard} paired={paired} hasFact={HasPairingFact()} " +
+                        $"sn='{Settings.PairedDiskSerial}' tokenHashLen={Settings.TokenHash.Length} " +
+                        $"authVols={Settings.AuthorizedVolumeGuids?.Count ?? -1} multi={Settings.MultiPartitionMode} " +
+                        $"statePairs={state.Pairings.Count} stateCounters={state.Counters.Count}");
         }
         catch
         {
             // 日志失败不影响校验结果
         }
         return ok;
+    }
+
+    /// <summary>插件状态里是否存在配对/计数事实（等同于"某处配对过"）</summary>
+    private static bool HasPairingFact()
+    {
+        try
+        {
+            var state = PluginStateStore.Load(AppContext.BaseDirectory);
+            return state.Pairings.Count > 0 || state.Counters.Count > 0;
+        }
+        catch
+        {
+            return false;
+        }
     }
 }
