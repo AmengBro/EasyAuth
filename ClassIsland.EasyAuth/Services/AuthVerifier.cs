@@ -81,6 +81,8 @@ public static class AuthVerifier
         var result = new AuthVerifyResult();
         var settings = opt.Settings;
         var volumes = opt.Volumes;
+        // 防御：凭据 JSON 里若显式写了 null，反序列化后列表会为 null
+        settings.AuthorizedVolumeGuids ??= new List<string>();
         if (volumes.Count == 0)
         {
             result.FailedStep = "定位分区";

@@ -673,13 +673,24 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
         return $"{b:0.#} {units[i]}";
     }
 
-    /// <summary>凭据保存前的完整性校验（编辑模式）</summary>
+    /// <summary>凭据保存前的完整性校验（编辑模式）。
+    /// 失败原因写入审计日志——ClassIsland 只回一句"设置无效"，靠日志定位。</summary>
     public override bool ValidateAuthorizeSettings()
     {
-        if (!Settings.HasAnyHardBinding)
+        var hard = Settings.HasAnyHardBinding;
+        var paired = IsPaired();
+        var ok = hard && paired;
+        try
         {
-            return false;
+            AuditLogService.Write(AppContext.BaseDirectory, ok ? "VALIDATE-OK" : "VALIDATE-FAIL",
+                detail: $"hardBinding={hard} paired={paired} sn='{Settings.PairedDiskSerial}' " +
+                        $"tokenHashLen={Settings.TokenHash.Length} " +
+                        $"authVols={Settings.AuthorizedVolumeGuids?.Count ?? -1} multi={Settings.MultiPartitionMode}");
         }
-        return IsPaired();
+        catch
+        {
+            // 日志失败不影响校验结果
+        }
+        return ok;
     }
 }
