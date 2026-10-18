@@ -137,9 +137,23 @@ cd tools\DeviceProbe
 dotnet run
 ```
 
+## 关于这个插件
+
+- 它没有花哨的桌面组件，不会在你的屏幕上飘任何东西
+- 它不做「一键班级管理」，不替你排课，不替你装花里胡哨的挂件
+- 它唯一的工作就是：在你点「验证」的那两秒里，确认插进来的是**那支** U 盘
+- 界面朴素得像一张 Excel——这是故意的。安全工具就该一眼看得懂，不该长得像游戏皮肤
+- 你负责保管 U 盘，它负责不认错盘。各司其职
+
+> 顺带一提：想要桌面挂件、时钟小组件、能把课表盘出花来的那些，请移步
+> [ExtraIsland](https://github.com/LiPolymer/ExtraIsland)。
+> EasyAuth 负责锁，它负责好看——各司其职，互不打扰。
+
 ## 致谢
 
 - [ClassIsland](https://github.com/ClassIsland/ClassIsland) 及其插件 SDK
+- [ExtraIsland](https://github.com/LiPolymer/ExtraIsland) — 生态里最会「加戏」的那个，某种意义上是 ClassIsland 的门面
+- 所有在 Issue 里认真复现 bug 并附上崩溃报告和截图的人（尤其指出「多分区配完保存不进去」那位）
 
 ## 许可证
 
