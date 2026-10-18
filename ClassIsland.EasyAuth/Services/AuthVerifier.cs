@@ -291,6 +291,8 @@ public static class AuthVerifier
         string? machineGuid, PluginState? state, out string? error)
     {
         error = null;
+        // 防御：凭据 JSON 若显式写了 null，反序列化后列表为 null 会 NRE
+        settings.AuthorizedVolumeGuids ??= new List<string>();
         if (string.IsNullOrWhiteSpace(machineGuid))
         {
             error = "无法读取本机标识（MachineGuid）";

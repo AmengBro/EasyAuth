@@ -573,6 +573,18 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
     /// <summary>编辑态：执行配对（设备模式 = 该设备全部合格分区逐个配对）</summary>
     private async Task PairAsync()
     {
+        // 先落一条"开始配对"，用于确认按钮是否真的被点击到
+        try
+        {
+            AuditLogService.Write(AppContext.BaseDirectory, "PAIR-ATTEMPT",
+                detail: $"multi={Settings.MultiPartitionMode} hasGroup={SelectedGroup != null} " +
+                        $"hasVolume={SelectedVolume != null} groupVols={SelectedGroup?.Volumes.Count ?? -1}");
+        }
+        catch
+        {
+            // 忽略
+        }
+
         List<VolumeInfo> targets;
         string displayName;
         if (MultiMode)
@@ -627,7 +639,20 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
         {
             var state = PluginStateStore.Load(stateDir);
             string? pairError = null;
-            var ok = await Task.Run(() => AuthVerifier.PairVolumes(Settings, targets, machineGuid, state, out pairError));
+            bool ok;
+            try
+            {
+                ok = await Task.Run(() => AuthVerifier.PairVolumes(Settings, targets, machineGuid, state, out pairError));
+            }
+            catch (Exception ex)
+            {
+                // 事件处理器是 async void，未捕获异常会静默吞掉——必须显式兜住
+                SetStatus($"配对异常：{ex.GetType().Name} {ex.Message}", true);
+                AuditLogService.Write(stateDir, "PAIR-ERROR", displayName,
+                    targets.FirstOrDefault()?.VolumeGuid, targets.FirstOrDefault()?.DiskSerialNumber,
+                    $"ex={ex.GetType().Name} msg={ex.Message}");
+                throw;
+            }
             if (!ok)
             {
                 SetStatus($"配对失败：{pairError}", true);
