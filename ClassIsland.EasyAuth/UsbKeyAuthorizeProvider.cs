@@ -44,6 +44,8 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
     private bool _busy;
     private bool _uiModeApplied;
     private bool _suppressMultiChange;
+    private int _instanceId;
+    private static int _instanceCounter;
 
     /// <summary>
     /// 当前是否为多分区（设备）模式。
@@ -121,12 +123,13 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
         Content = root;
 
         Loaded += OnLoaded;
+        Unloaded += OnUnloaded;
         _refreshButton.Click += async (_, _) => await RefreshVolumesAsync();
         _readButton.Click += async (_, _) => await ReadDeviceAsync();
         _saveButton.Click += async (_, _) => await PairAsync();
         _actionButton.Click += async (_, _) => await OnActionClickedAsync();
         _auditButton.Click += (_, _) => _deviceInfo.Text = "审计日志（最近 15 条）：\n" +
-            AuditLogService.ReadTail(AppContext.BaseDirectory);
+            AuditLogService.ReadTail(PluginPaths.PluginDirectory);
         _volumeBox.SelectionChanged += async (_, _) => await RememberSelectedVolumeAsync();
         _chkMulti.IsCheckedChanged += async (_, _) =>
         {
@@ -155,7 +158,7 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
         {
             return;
         }
-        var stateDir = AppContext.BaseDirectory;
+        var stateDir = PluginPaths.PluginDirectory;
         await Task.Run(() =>
         {
             var st = PluginStateStore.Load(stateDir);
@@ -205,8 +208,17 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
 
     private void OnLoaded(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
+        _instanceId = ++_instanceCounter;
+        AuditLogService.Write(PluginPaths.PluginDirectory, "CTRL-LOADED",
+            detail: $"instance={_instanceId} editing={IsEditingMode} multi={Settings.MultiPartitionMode}");
         ApplyMode();
         _ = RefreshVolumesAsync();
+    }
+
+    private void OnUnloaded(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        AuditLogService.Write(PluginPaths.PluginDirectory, "CTRL-UNLOADED",
+            detail: $"instance={_instanceId}");
     }
 
     private bool IsPaired()
@@ -258,7 +270,7 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
                     string.Equals(v.VolumeGuid, Settings.PairedVolumeGuid, StringComparison.OrdinalIgnoreCase));
             if (target == null)
             {
-                var state = await Task.Run(() => PluginStateStore.Load(AppContext.BaseDirectory));
+                var state = await Task.Run(() => PluginStateStore.Load(PluginPaths.PluginDirectory));
                 if (!string.IsNullOrEmpty(state.LastVolumeGuid))
                 {
                     target = volumes.FirstOrDefault(v =>
@@ -317,7 +329,7 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
         }
         if (target == null)
         {
-            var state = await Task.Run(() => PluginStateStore.Load(AppContext.BaseDirectory));
+            var state = await Task.Run(() => PluginStateStore.Load(PluginPaths.PluginDirectory));
             if (!string.IsNullOrEmpty(state.LastVolumeGuid))
             {
                 target = groups.FirstOrDefault(g => g.Volumes.Any(v =>
@@ -464,7 +476,7 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
             }
 
             var machineGuid = await Task.Run(DiskInfoService.GetMachineGuid);
-            var stateDir = AppContext.BaseDirectory;
+            var stateDir = PluginPaths.PluginDirectory;
             var state = await Task.Run(() => PluginStateStore.Load(stateDir));
             // 审计标签在 UI 线程算好：Task.Run 内不得触碰任何 UI 状态
             var modeTag = Settings.MultiPartitionMode ? "multi" : "single";
@@ -609,8 +621,8 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
         // 先落一条"开始配对"，用于确认按钮是否真的被点击到
         try
         {
-            AuditLogService.Write(AppContext.BaseDirectory, "PAIR-ATTEMPT",
-                detail: $"multi={Settings.MultiPartitionMode} hasGroup={SelectedGroup != null} " +
+            AuditLogService.Write(PluginPaths.PluginDirectory, "PAIR-ATTEMPT",
+                detail: $"instance={_instanceId} multi={Settings.MultiPartitionMode} hasGroup={SelectedGroup != null} " +
                         $"hasVolume={SelectedVolume != null} groupVols={SelectedGroup?.Volumes.Count ?? -1}");
         }
         catch
@@ -634,6 +646,11 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
             {
                 SetStatus("该设备没有可配对的分区（分区需总容量 ≥32MB 且可用 ≥16MB）。", true);
                 return;
+            }
+            if (targets.Count == 1)
+            {
+                // 单分区设备：多分区模式与单分区模式行为一致，提示一句免得误解
+                SetStatus($"该设备只有 1 个可配对分区（{targets[0].DriveLetter}:），等价于单分区模式。", false);
             }
         }
         else
@@ -664,7 +681,7 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
 
         SetStatus($"正在配对（{targets.Count} 个分区）…", false);
         var machineGuid = await Task.Run(DiskInfoService.GetMachineGuid);
-        var stateDir = AppContext.BaseDirectory;
+        var stateDir = PluginPaths.PluginDirectory;
 
         // 配对期间锁定界面，避免重复点击
         _busy = true;
@@ -743,9 +760,9 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
         var ok = hard && paired;
         try
         {
-            var state = PluginStateStore.Load(AppContext.BaseDirectory);
-            AuditLogService.Write(AppContext.BaseDirectory, ok ? "VALIDATE-OK" : "VALIDATE-FAIL",
-                detail: $"hardBinding={hard} paired={paired} hasFact={HasPairingFact()} " +
+            var state = PluginStateStore.Load(PluginPaths.PluginDirectory);
+            AuditLogService.Write(PluginPaths.PluginDirectory, ok ? "VALIDATE-OK" : "VALIDATE-FAIL",
+                detail: $"instance={_instanceId} hardBinding={hard} paired={paired} hasFact={HasPairingFact()} " +
                         $"sn='{Settings.PairedDiskSerial}' tokenHashLen={Settings.TokenHash.Length} " +
                         $"authVols={Settings.AuthorizedVolumeGuids?.Count ?? -1} multi={Settings.MultiPartitionMode} " +
                         $"statePairs={state.Pairings.Count} stateCounters={state.Counters.Count}");
@@ -762,7 +779,7 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
     {
         try
         {
-            var state = PluginStateStore.Load(AppContext.BaseDirectory);
+            var state = PluginStateStore.Load(PluginPaths.PluginDirectory);
             return state.Pairings.Count > 0 || state.Counters.Count > 0;
         }
         catch
