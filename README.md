@@ -152,27 +152,29 @@ dotnet run
 > [ExtraIsland](https://github.com/LiPolymer/ExtraIsland)。
 > EasyAuth 负责锁，它负责好看——各司其职，互不打扰。
 
-## 为什么又写了一个 U 盘认证（由 ExtraIsland 提供）
+## 为什么又写了一个 U 盘认证
 
-看到标题别困惑——ClassIsland 生态里做桌面挂件的
-[ExtraIsland](https://github.com/LiPolymer/ExtraIsland) 其实早就提供了一个「U盘」认证项
-（`extraIsland.authProviders.usbDrive`）。它能用，但在教室这种「人手一支盘」的场景下有点吃力：
+ClassIsland 生态里，U 盘解锁这个思路最早由 [ExtraIsland](https://github.com/LiPolymer/ExtraIsland)
+的「U盘」认证项（`extraIsland.authProviders.usbDrive`）带进社区——**感谢它趟出了这条路**，
+很多想法都是站在它的肩膀上继续往前想的。
 
-- **只认一个分区**。它的源码里明明白白留着 `// TODO:多分区支持`，多分区设备只能挑其中一盘来用
-- **"密钥"是明文的**。文件模式往盘符根目录写一个 `.verify.extraisland.nfo`，内容就是一个随机 GUID——谁拿到盘谁就能读
-- **序列号模式近乎明文**。校验值是**裸磁盘序列号**的 SHA-256，而序列号用 `wmic diskdrive get serialnumber` 谁都能问出来
-- **拷走就一直有效**。凭据只在配对时写一次，没有计数机制，整盘复制过去照样能解锁
+我们沿着这条路把细节做得更完整了一些，主要是补上以往这类插件留下的几处短板：
 
-于是我们另起炉灶。它做的事一样朴素：不往屏幕上飘东西，只在点「验证」的那两秒里，
+- **多分区设备能用了**。多分区 U 盘在以往的实现里不太好处理，EasyAuth 提供（实验性的）设备级同时校验
+- **密钥不以明文落盘**。密钥文件经 AES-256-GCM 加密，并且与本机、所在磁盘（乃至你的 Windows 账户）绑定
+- **克隆是可被察觉的**。每次成功解锁计数 +1，整盘复制过去并不能无限使用
+- **每一步都看得见**。进度条与逐项状态会告诉你校验走到哪一层，审计日志留痕，失败时能定位到具体环节
+
+它做的事一样朴素：不往屏幕上飘东西，只在点「验证」的那两秒里，
 确认插进来的是**那支**盘——而且认得出是哪一盘、是不是原来那一支。
 
-> 两边都是生态里的作品，这里没有取代关系：想要桌面挂件、时钟小组件、
+> 两个插件各有侧重，这里没有取代关系：想要桌面挂件、时钟小组件、
 > 能把课表盘出花来的，请移步 ExtraIsland。EasyAuth 负责锁，它负责好看——各司其职，互不打扰。
 
 ## 致谢
 
 - [ClassIsland](https://github.com/ClassIsland/ClassIsland) 及其插件 SDK
-- [ExtraIsland](https://github.com/LiPolymer/ExtraIsland) — 生态里最会「加戏」的那个，某种意义上是 ClassIsland 的门面；也感谢它把 U 盘认证这条路趟出来了
+- [ExtraIsland](https://github.com/LiPolymer/ExtraIsland) — 生态里最会「加戏」的那个，某种意义上是 ClassIsland 的门面；也感谢它把 U 盘认证这条路趟了出来
 - 所有在 Issue 里认真复现 bug 并附上崩溃报告和截图的人（尤其指出「多分区配完保存不进去」那位）
 
 ## 许可证
