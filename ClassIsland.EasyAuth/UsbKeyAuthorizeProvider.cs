@@ -13,7 +13,7 @@ namespace ClassIsland.EasyAuth;
 
 /// <summary>
 /// U盘密钥认证提供方。
-/// 认证态：分区下拉框 -> 验证 -> 进度条 + 逐项状态 -> 通过后按钮变"进入"。
+/// 认证态：分区下拉框 -> 验证 -> 进度条 + 逐项状态 -> 通过后按钮变"继续"。
 /// 编辑态：分层开关复选框 -> 读取设备信息 -> 保存配对。
 /// </summary>
 [AuthorizeProviderInfo("easyauth.usbkey", "U盘密钥", "\uec8b")]
@@ -26,13 +26,15 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
     private readonly TextBlock _status = new() { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 0) };
 
     private readonly StackPanel _editPanel = new();
-    private readonly CheckBox _chkMulti = new() { Content = "多分区同时校验（下拉框显示设备名，按设备校验其全部分区）", Margin = new Thickness(0, 2, 0, 0) };
+    private readonly TextBlock _multiHint = new();
+    private readonly TextBlock _userHint = new();
+    private readonly CheckBox _chkMulti = new() { Content = "多分区同时校验（实验性 · 下拉框显示设备名，按设备校验其全部分区）", Margin = new Thickness(0, 2, 0, 0) };
     private readonly CheckBox _chkSn = new() { Content = "磁盘序列号绑定（防换盘克隆）", Margin = new Thickness(0, 2, 0, 0) };
     private readonly CheckBox _chkVolume = new() { Content = "卷标识绑定（防同盘另一分区）", Margin = new Thickness(0, 2, 0, 0) };
     private readonly CheckBox _chkToken = new() { Content = "token 校验（防复制密钥文件）", Margin = new Thickness(0, 2, 0, 0) };
     private readonly CheckBox _chkCounter = new() { Content = "克隆计数（防过期克隆盘）", Margin = new Thickness(0, 2, 0, 0) };
     private readonly CheckBox _chkBrand = new() { Content = "品牌提示（仅提示，不参与判定）", Margin = new Thickness(0, 2, 0, 0) };
-    private readonly CheckBox _chkUser = new() { Content = "Windows 账户绑定（DPAPI，需重新配对）", Margin = new Thickness(0, 2, 0, 0) };
+    private readonly CheckBox _chkUser = new() { Content = "Windows 账户绑定（实验性 · DPAPI，需重新配对）", Margin = new Thickness(0, 2, 0, 0) };
     private readonly Button _readButton = new() { Content = "读取", Margin = new Thickness(0, 8, 0, 0) };
     private readonly Button _auditButton = new() { Content = "查看审计日志", Margin = new Thickness(8, 0, 0, 0) };
     private readonly TextBlock _deviceInfo = new() { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 0) };
@@ -74,12 +76,34 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
             Margin = new Thickness(0, 8, 0, 0)
         });
         _editPanel.Children.Add(_chkMulti);
+        _multiHint = new TextBlock
+        {
+            Text = "⚠ 实验性功能：多分区模式要求每个分区都单独配对，漏掉任一个都将无法解锁。" +
+                   "首次使用建议先在单分区模式下验证通过，再切换到此模式。",
+            Foreground = new SolidColorBrush(Color.FromRgb(0xB2, 0x6A, 0x00)),
+            TextWrapping = TextWrapping.Wrap,
+            FontSize = 11,
+            Margin = new Thickness(0, 2, 0, 4),
+            IsVisible = false
+        };
+        _editPanel.Children.Add(_multiHint);
         _editPanel.Children.Add(_chkSn);
         _editPanel.Children.Add(_chkVolume);
         _editPanel.Children.Add(_chkToken);
         _editPanel.Children.Add(_chkCounter);
         _editPanel.Children.Add(_chkBrand);
         _editPanel.Children.Add(_chkUser);
+        _userHint = new TextBlock
+        {
+            Text = "⚠ 实验性功能：账户绑定把密钥再包一层当前 Windows 账户的 DPAPI 密文。" +
+                   "仅在教师使用独占账户时有额外保护；多账号共用时无增益，且启用后必须重新配对。",
+            Foreground = new SolidColorBrush(Color.FromRgb(0xB2, 0x6A, 0x00)),
+            TextWrapping = TextWrapping.Wrap,
+            FontSize = 11,
+            Margin = new Thickness(0, 2, 0, 4),
+            IsVisible = false
+        };
+        _editPanel.Children.Add(_userHint);
         var readRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
         readRow.Children.Add(_readButton);
         Grid.SetColumn(_auditButton, 1);
@@ -106,12 +130,18 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
         _volumeBox.SelectionChanged += async (_, _) => await RememberSelectedVolumeAsync();
         _chkMulti.IsCheckedChanged += async (_, _) =>
         {
+            // 实验性功能提示条跟随开关显隐
+            _multiHint.IsVisible = _chkMulti.IsChecked == true;
             if (_suppressMultiChange)
             {
                 return;
             }
             Settings.MultiPartitionMode = _chkMulti.IsChecked ?? false;
             await RefreshVolumesAsync();
+        };
+        _chkUser.IsCheckedChanged += (_, _) =>
+        {
+            _userHint.IsVisible = _chkUser.IsChecked == true;
         };
     }
 
@@ -162,6 +192,9 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
             _chkCounter.IsChecked = Settings.EnableCloneCounter;
             _chkBrand.IsChecked = Settings.EnableBrandHint;
             _chkUser.IsChecked = Settings.EnableUserBinding;
+            // 已有配置时同步提示条的显隐
+            _multiHint.IsVisible = _chkMulti.IsChecked == true;
+            _userHint.IsVisible = _chkUser.IsChecked == true;
             SetStatus(IsPaired() ? $"当前配对盘 SN：{Settings.PairedDiskSerial}" : "尚未配对：请选择分区后点「读取」，确认设备信息无误再点「保存配对」。", false);
         }
         else
@@ -334,7 +367,7 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
         _status.Foreground = new SolidColorBrush(Color.FromRgb(0x0F, 0x6C, 0x3C));
     }
 
-    /// <summary>认证态主按钮：验证 / 进入</summary>
+    /// <summary>认证态主按钮：验证 / 继续</summary>
     private async Task OnActionClickedAsync()
     {
         if (IsEditingMode)
@@ -451,10 +484,10 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
             if (result.Success)
             {
                 _verified = true;
-                _actionButton.Content = "进入";
+                _actionButton.Content = "继续";
                 _actionButton.IsEnabled = true;
                 var warn = result.CounterWriteBackWarning ? "（计数回写失败，防克隆计数已降级）" : "";
-                SetStatusOk($"验证通过（{freshTargets.Count} 个分区）{warn}，点「进入」继续。");
+                SetStatusOk($"验证通过（{freshTargets.Count} 个分区）{warn}，点「继续」完成验证。");
                 await Task.Run(() =>
                 {
                     foreach (var kv in result.NewCounters)
