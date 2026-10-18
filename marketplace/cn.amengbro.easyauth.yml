@@ -1,0 +1,31 @@
+# ClassIsland 插件市场（PluginIndex）提交条目
+#
+# 提交流程：
+#   1. fork https://github.com/ClassIsland/PluginIndex
+#   2. 把本文件放到 index/plugins-v2/cn.amengbro.easyauth.yml
+#   3. 提 PR —— .github/workflows/validate-pr.yml 会自动跑索引生成器校验
+#
+# 字段说明（依据 ClassIsland.PluginIndexGenerator 源码）：
+#   assetsRoot   —— 仓库中 icon.png / README.md 所在的分支（或分支/子目录），
+#                   生成器拼 {root}/{repoOwner}/{repoName}/raw/{assetsRoot}/{icon|readme}
+#   artifactName —— Release 附件里 cipx 的文件名（留空则取任意 .cipx）
+#   version      —— 提交时写什么无所谓，生成器会用「最新 Release 的 tag」覆盖它
+#
+# 每次发版后要同步更新本文件的 version（保持与 manifest.yml / Release tag 一致）。
+
+id: cn.amengbro.easyauth
+name: EasyAuth U盘密钥
+description: 用 U 盘（或移动硬盘）解锁 ClassIsland 管理界面。密钥文件与本机、所在磁盘、Windows 账户三重绑定，支持六层可插拔校验、克隆计数、多分区同时校验与审计日志。
+entranceAssembly: ClassIsland.EasyAuth.dll
+url: https://github.com/AmengBro/EasyAuth
+version: 0.2.0
+apiVersion: 2.1.0.1
+author: AmengBro
+readme: README.md
+icon: icon.png
+repoOwner: AmengBro
+repoName: EasyAuth
+assetsRoot: main
+artifactName: ClassIsland.EasyAuth.cipx
+supportedOSPlatforms:
+  - Windows
