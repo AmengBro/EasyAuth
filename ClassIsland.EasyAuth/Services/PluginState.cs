@@ -27,6 +27,15 @@ public class PluginState
     {
         /// <summary>该卷 key.bin 内 token 的 SHA-256</summary>
         public string TokenHash { get; set; } = "";
+
+        /// <summary>配对时该卷所在磁盘的序列号（控件重建后用于恢复凭据设置）</summary>
+        public string DiskSerial { get; set; } = "";
+
+        /// <summary>配对时的设备型号（仅界面展示）</summary>
+        public string BrandHint { get; set; } = "";
+
+        /// <summary>该卷配对时是否处于多分区模式（控件重建后恢复下拉框语义）</summary>
+        public bool MultiPartitionMode { get; set; }
     }
 
     /// <summary>上次在界面上选择的分区（纯体验偏好，与安全无关）</summary>

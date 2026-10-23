@@ -14,6 +14,7 @@
          相对段的项目引用（会误报"项目不存在"），因此这里使用绝对路径。
          换机器时只需把下面这行改成新的绝对路径。 -->
     <ProjectReference Include="I:\Data-数据区\应用\自制\easyauth\ClassIsland.EasyAuth\ClassIsland.EasyAuth.csproj" />
+      <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="8.0.0" />
   </ItemGroup>
 
 </Project>

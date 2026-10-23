@@ -340,6 +340,14 @@ public static class AuthVerifier
             var tokenHash = CryptoService.Sha256Hex(token);
             state?.SetTokenHash(v.VolumeGuid, tokenHash);
             state?.SetCounter(v.VolumeGuid, 0);
+            if (state != null)
+            {
+                // 记录恢复所需的信息：凭据未保存就重建控件时，可从中还原设置
+                var rec = state.Pairings[v.VolumeGuid];
+                rec.DiskSerial = v.DiskSerialNumber ?? "";
+                rec.BrandHint = v.DiskModel ?? "";
+                rec.MultiPartitionMode = settings.MultiPartitionMode;
+            }
 
             if (!settings.AuthorizedVolumeGuids.Any(g =>
                     string.Equals(g, v.VolumeGuid, StringComparison.OrdinalIgnoreCase)))

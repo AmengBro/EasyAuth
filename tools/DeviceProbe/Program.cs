@@ -1,3 +1,5 @@
+using System.Text.Json;
+using System.Net;
 using System.Text;
 using ClassIsland.EasyAuth.Models;
 using ClassIsland.EasyAuth.Services;
@@ -316,12 +318,14 @@ var sameDisk = groups.FirstOrDefault(g => g.Volumes.Count + g.SkippedVolumes.Cou
 Case("同盘分区归入同一设备组", sameDisk != null,
     sameDisk == null ? "" : $"设备={sameDisk.Model[..Math.Min(18, sameDisk.Model.Length)]} 合格={sameDisk.Volumes.Count} 忽略={sameDisk.SkippedVolumes.Count}");
 
+// 17) 本地 HTTP API（供 Tauri 等外部程序）：冒烟测试
+await TestLocalApiAsync();
+
 Console.WriteLine();
 Console.WriteLine($"用例结果：{pass} 通过 / {fail} 失败");
 
 static UsbKeyAuthSettings CloneSettings(UsbKeyAuthSettings s)
-{
-    return new UsbKeyAuthSettings
+{    return new UsbKeyAuthSettings
     {
         PairedDiskSerial = s.PairedDiskSerial,
         PairedVolumeGuid = s.PairedVolumeGuid,
@@ -342,5 +346,79 @@ static void CopyDirectory(string src, string dst)
     foreach (var file in Directory.GetFiles(src))
     {
         File.Copy(file, Path.Combine(dst, Path.GetFileName(file)), true);
+    }
+}
+
+/// <summary>本地 HTTP API 冒烟测试：起服务、打各端点、验证响应、关服务。
+/// 注意：课程相关端点依赖 ClassIsland 宿主（ILessonsService/IProfileService），
+/// 探针环境没有宿主程序集，这些端点在此环境下只能验证"不崩溃、返回规范 JSON"，
+/// 真实数据需在 ClassIsland 内验证。提醒相关端点不依赖宿主，可完整测试。</summary>
+async Task TestLocalApiAsync()
+{
+    Console.WriteLine();
+    Console.WriteLine("—— 本地 HTTP API 冒烟测试 ——");
+
+    using var api = new EasyAuthApiService();
+    await api.StartAsync(CancellationToken.None);
+    try
+    {
+        using var http = new HttpClient { BaseAddress = new Uri(api.BaseUrl), Timeout = TimeSpan.FromSeconds(10) };
+
+        // /api/status：探针无宿主，宽松断言（返回规范 JSON 即可）
+        var statusResp = await http.GetAsync("/api/status");
+        var status = await statusResp.Content.ReadAsStringAsync();
+        Case("GET /api/status 返回规范 JSON", IsJson(status), $"HTTP {(int)statusResp.StatusCode} {status.Trim()}");
+
+        // /api/next-class：同上，验证不崩溃
+        var nextResp = await http.GetAsync("/api/next-class");
+        var nextBody = await nextResp.Content.ReadAsStringAsync();
+        Case("GET /api/next-class 返回规范 JSON", IsJson(nextBody), $"HTTP {(int)nextResp.StatusCode}");
+
+        // 创建提醒
+        var createBody = new StringContent(
+            JsonSerializer.Serialize(new { title = "探针提醒", message = "来自 DeviceProbe", delaySeconds = 3600 }),
+            Encoding.UTF8, "application/json");
+        var createResp = await http.PostAsync("/api/reminder", createBody);
+        var createJson = await createResp.Content.ReadAsStringAsync();
+        var id = JsonDocument.Parse(createJson).RootElement.GetProperty("id").GetString();
+        Case("POST /api/reminder 创建成功并返回 id", createResp.IsSuccessStatusCode && !string.IsNullOrEmpty(id),
+            $"id={id}");
+
+        // 列表里应能查到
+        var list = await http.GetStringAsync("/api/reminders");
+        Case("GET /api/reminders 含刚创建的提醒", list.Contains(id!), "");
+
+        // 取消
+        var del = await http.DeleteAsync($"/api/reminder/{id}");
+        Case("DELETE /api/reminder/{id} 取消成功", del.IsSuccessStatusCode, "");
+
+        var list2 = await http.GetStringAsync("/api/reminders");
+        Case("取消后不再出现在待触发列表", !list2.Contains($"\"id\":\"{id}\""), "");
+
+        // 未知路径 404
+        var notFound = await http.GetAsync("/api/nope");
+        Case("未知接口返回 404", notFound.StatusCode == HttpStatusCode.NotFound, "");
+
+        // 空 body 创建提醒应被拒（参数校验）
+        var emptyResp = await http.PostAsync("/api/reminder",
+            new StringContent("{}", Encoding.UTF8, "application/json"));
+        Case("空提醒被参数校验拒绝(400)", emptyResp.StatusCode == HttpStatusCode.BadRequest, "");
+    }
+    finally
+    {
+        await api.StopAsync(CancellationToken.None);
+    }
+}
+
+static bool IsJson(string s)
+{
+    try
+    {
+        JsonDocument.Parse(s);
+        return true;
+    }
+    catch
+    {
+        return false;
     }
 }

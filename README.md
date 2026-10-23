@@ -171,6 +171,82 @@ ClassIsland 生态里，U 盘解锁这个思路最早由 [ExtraIsland](https://g
 > 两个插件各有侧重，这里没有取代关系：想要桌面挂件、时钟小组件、
 > 能把课表盘出花来的，请移步 ExtraIsland。EasyAuth 负责锁，它负责好看——各司其职，互不打扰。
 
+## 本地 HTTP API（供 Tauri 等外部程序）
+
+EasyAuth 在 `127.0.0.1:24721` 起一个本地 HTTP 服务（**只绑定回环，不对外**），
+让外部程序便捷获取课程信息、创建提醒。默认开启，端口与令牌可在插件目录的
+`api.json` 里调整：
+
+```json
+{ "Enabled": true, "Port": 24721, "Token": "" }
+```
+
+`Token` 非空时，所有请求需带 `Authorization: Bearer <Token>`。
+
+### 接口一览
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/status` | 插件与课表加载状态 |
+| GET | `/api/next-class` | **下一节课是什么、还有多久** |
+| GET | `/api/class-plan?date=yyyy-MM-dd` | 指定日期的课表与时间点 |
+| POST | `/api/reminder` | 创建提醒（延时触发） |
+| GET | `/api/reminders` | 待触发 / 已触发列表 |
+| DELETE | `/api/reminder/{id}` | 取消指定提醒 |
+
+### `/api/next-class` 返回示例
+
+```json
+{
+  "state": "OnClass",
+  "isInClass": true,
+  "isBreaking": false,
+  "isAfterSchool": false,
+  "hasNextClass": true,
+  "nextClass": {
+    "name": "数学",
+    "initial": "数",
+    "teacher": "王老师",
+    "startTime": "10:05:00",
+    "endTime": "10:50:00",
+    "durationSeconds": 2700
+  },
+  "currentClass": { "name": "语文", "teacher": "李老师", "startTime": "09:00:00", "endTime": "09:55:00" },
+  "secondsUntilNextClass": 0,
+  "secondsUntilBreak": 1200,
+  "timeUntilNextClass": "00:00:00",
+  "timeUntilBreak": "00:20:00"
+}
+```
+
+> `secondsUntilNextClass` 语义：正在上课时为 0（要看还有多久下课请用
+> `secondsUntilBreak`）；未加载课表时为 0 且 `hasNextClass` 为 false。
+
+### 创建提醒
+
+```bash
+curl -X POST http://127.0.0.1:24721/api/reminder \
+  -H "Content-Type: application/json" \
+  -d '{"title":"该上课了","message":"下节是数学","delaySeconds":600,"durationSeconds":8}'
+```
+
+到时间后通过 ClassIsland 的通知系统弹出（EasyAuth 自带的提醒渠道）。
+`delaySeconds` 为延时秒数，`durationSeconds` 控制通知停留时长（1~600，默认 5）。
+
+### 安全说明
+
+- 只监听 `127.0.0.1`，**不可从局域网或外网访问**
+- 建议设置 `Token`；本机任意程序都能调用的接口，令牌是唯一的门槛
+- 端口被占用时服务自动降级（不影响 ClassIsland 本体与认证功能），可在 `audit.log` 看到 `API-START-FAIL`
+
+## 同时添加多个 U 盘密钥凭据
+
+可以在凭据里添加**多个**「U盘密钥」项，每项各自独立配对、独立保存：
+
+- 每个凭据记住自己的选择与配对（选择记录存在凭据自身，不共用）
+- **同一支 U 盘不建议配对到两个凭据**——两处会共用同一份密钥计数，互相顶替
+- 推荐做法：一支盘对一个凭据；要给不同班级/不同用途配不同盘，就各建一个凭据
+
 ## 致谢
 
 - [ClassIsland](https://github.com/ClassIsland/ClassIsland) 及其插件 SDK

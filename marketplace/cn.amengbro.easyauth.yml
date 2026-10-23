@@ -18,7 +18,7 @@ name: EasyAuth U盘密钥
 description: 用 U 盘（或移动硬盘）解锁 ClassIsland 管理界面。密钥文件与本机、所在磁盘、Windows 账户三重绑定，支持六层可插拔校验、克隆计数、多分区同时校验与审计日志。
 entranceAssembly: ClassIsland.EasyAuth.dll
 url: https://github.com/AmengBro/EasyAuth
-version: 0.2.0
+version: 0.3.0
 apiVersion: 2.1.0.1
 author: AmengBro
 readme: README.md

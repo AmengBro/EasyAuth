@@ -4,5 +4,5 @@ description: U盘密钥认证提供方 - 插入认证U盘即可解锁 ClassIslan
 entranceAssembly: "ClassIsland.EasyAuth.dll"
 url: http://127.0.0.1:3000/AmengBro/EasyAuth
 apiVersion: 2.1.0.1
-version: 0.2.0
+version: 0.3.0
 author: AmengBro

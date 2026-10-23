@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace ClassIsland.EasyAuth.Models;
 
 /// <summary>
@@ -44,7 +46,9 @@ public class UsbKeyAuthSettings
     /// </summary>
     public bool EnableUserBinding { get; set; }
 
-    /// <summary>是否至少启用了一种硬绑定（SN/卷GUID/token 至少其一）</summary>
+    /// <summary>是否至少启用了一种硬绑定（SN/卷GUID/token 至少其一）。
+/// 计算属性，不参与序列化——否则会把冗余字段写进凭据 JSON。</summary>
+    [JsonIgnore]
     public bool HasAnyHardBinding => EnableSnBinding || EnableVolumeGuidBinding || EnableTokenCheck;
 
     /// <summary>
@@ -53,9 +57,16 @@ public class UsbKeyAuthSettings
     /// </summary>
     public bool MultiPartitionMode { get; set; }
 
-    /// <summary>
-    /// 授权卷 GUID 列表（多分区模式下凭据要求这些卷全部通过）。
-    /// 空表示沿用主卷（PairedVolumeGuid），兼容单分区模式。
-    /// </summary>
-    public List<string> AuthorizedVolumeGuids { get; set; } = [];
+/// <summary>
+/// 授权卷 GUID 列表（多分区模式下凭据要求这些卷全部通过）。
+/// 空表示沿用主卷（PairedVolumeGuid），兼容单分区模式。
+/// </summary>
+public List<string> AuthorizedVolumeGuids { get; set; } = [];
+
+/// <summary>
+/// 本凭据记住的选中分区（纯体验偏好，与安全无关）。
+/// 存在凭据里而非全局状态，是为了支持同时添加多个 U 盘密钥凭据——
+/// 每个凭据各自记住自己的选择，互不干扰。
+/// </summary>
+public string SelectedVolumeGuid { get; set; } = "";
 }

@@ -46,6 +46,7 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
     private bool _suppressMultiChange;
     private int _instanceId;
     private static int _instanceCounter;
+    private bool _loadedOnce;
 
     /// <summary>
     /// 当前是否为多分区（设备）模式。
@@ -208,11 +209,78 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
 
     private void OnLoaded(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
+        // Avalonia 的 ListBox 在窗口高度变化时会回收容器，导致同一个实例的
+        // Unloaded/Loaded 重放。此时若重新枚举分区，会把用户刚选中的项清空、
+        // 也会覆盖刚设置的「配对成功」提示——正是多分区模式点击保存配对后
+        // 下拉框直接清空、绿字提示消失的直接原因。
+        // 因此只在首次加载时枚举；后续重放仅记录日志。
+        if (_loadedOnce)
+        {
+            AuditLogService.Write(PluginPaths.PluginDirectory, "CTRL-RELOADED",
+                detail: $"instance={_instanceId}（同一实例重复 Loaded，跳过重新枚举以保留选择）");
+            return;
+        }
+        _loadedOnce = true;
         _instanceId = ++_instanceCounter;
         AuditLogService.Write(PluginPaths.PluginDirectory, "CTRL-LOADED",
-            detail: $"instance={_instanceId} editing={IsEditingMode} multi={Settings.MultiPartitionMode}");
+            detail: $"instance={_instanceId} editing={IsEditingMode} multi={Settings.MultiPartitionMode} " +
+                    $"paired={IsPaired()} authVols={Settings.AuthorizedVolumeGuids?.Count ?? -1}");
+        RecoverSettingsFromState();
         ApplyMode();
         _ = RefreshVolumesAsync();
+    }
+
+    /// <summary>
+    /// 从插件状态恢复凭据设置。
+    /// 场景：配对成功后凭据尚未「确定」保存，控件因故被重建——新实例的 Settings
+    /// 来自磁盘上未更新的 JSON，配对信息全丢，表现为下拉框清空、校验失败。
+    /// 配对事实同时写在插件 state.json 里，可据此还原。
+    /// </summary>
+    private void RecoverSettingsFromState()
+    {
+        // 仅在「本凭据完全空白」时从本机配对记录恢复。
+        // 多凭据场景下（同时添加多个 U 盘密钥），若某凭据已经做出过选择，
+        // 绝不能拿别的凭据/全局记录覆盖它。
+        if (IsPaired() || IsEditingMode == false)
+        {
+            return;
+        }
+        if (!string.IsNullOrEmpty(Settings.SelectedVolumeGuid))
+        {
+            return;
+        }
+        try
+        {
+            var state = PluginStateStore.Load(PluginPaths.PluginDirectory);
+            if (state.Pairings.Count == 0)
+            {
+                return;
+            }
+            var guid = !string.IsNullOrEmpty(state.LastVolumeGuid) && state.Pairings.ContainsKey(state.LastVolumeGuid)
+                ? state.LastVolumeGuid
+                : state.Pairings.Keys.FirstOrDefault();
+            if (guid == null)
+            {
+                return;
+            }
+            var rec = state.Pairings[guid];
+            Settings.PairedVolumeGuid = guid;
+            Settings.PairedDiskSerial = rec.DiskSerial;
+            Settings.TokenHash = rec.TokenHash;
+            Settings.BrandHint = rec.BrandHint;
+            Settings.MultiPartitionMode = rec.MultiPartitionMode;
+            Settings.AuthorizedVolumeGuids ??= new List<string>();
+            if (Settings.AuthorizedVolumeGuids.Count == 0)
+            {
+                Settings.AuthorizedVolumeGuids.Add(guid);
+            }
+            AuditLogService.Write(PluginPaths.PluginDirectory, "CTRL-RECOVER",
+                detail: $"instance={_instanceId} vol={guid} multi={rec.MultiPartitionMode}");
+        }
+        catch
+        {
+            // 恢复失败不影响主流程
+        }
     }
 
     private void OnUnloaded(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
@@ -473,6 +541,19 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
             {
                 SetStatus($"分区 {string.Join("、", missing)} 已不可用，请重新选择。", true);
                 return;
+            }
+
+            // 多凭据场景：只校验本凭据授权的分区，避免选中别的凭据配对的盘也放行
+            if (Settings.AuthorizedVolumeGuids is { Count: > 0 })
+            {
+                var allowed = freshTargets.Where(v => Settings.AuthorizedVolumeGuids.Any(g =>
+                    string.Equals(g, v.VolumeGuid, StringComparison.OrdinalIgnoreCase))).ToList();
+                if (allowed.Count == 0)
+                {
+                    SetStatus("选中的分区不在本凭据的授权列表中（可能是另一个 U 盘密钥凭据配对的盘）。", true);
+                    return;
+                }
+                freshTargets = allowed;
             }
 
             var machineGuid = await Task.Run(DiskInfoService.GetMachineGuid);
@@ -774,13 +855,23 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
         return ok;
     }
 
-    /// <summary>插件状态里是否存在配对/计数事实（等同于"某处配对过"）</summary>
-    private static bool HasPairingFact()
+    /// <summary>插件状态里是否存在配对/计数事实（等同于"某处配对过"）。
+    /// 按【本凭据授权的卷】判断，不看全局——否则第二个未配对的 U 盘凭据
+    /// 会因别处配过而被误判为已配对。</summary>
+    private bool HasPairingFact()
     {
         try
         {
             var state = PluginStateStore.Load(PluginPaths.PluginDirectory);
-            return state.Pairings.Count > 0 || state.Counters.Count > 0;
+            if (Settings.AuthorizedVolumeGuids is { Count: > 0 })
+            {
+                return Settings.AuthorizedVolumeGuids.Any(g => state.Pairings.ContainsKey(g));
+            }
+            if (!string.IsNullOrEmpty(Settings.PairedVolumeGuid))
+            {
+                return state.Pairings.ContainsKey(Settings.PairedVolumeGuid);
+            }
+            return false;
         }
         catch
         {
