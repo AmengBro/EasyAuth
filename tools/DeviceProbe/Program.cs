@@ -489,6 +489,20 @@ async Task TestLocalApiAsync()
                 maskDurationSeconds = 4
             }), Encoding.UTF8, "application/json"));
         Case("maskDurationSeconds 优先于 durationSeconds", maskOnlyResp.IsSuccessStatusCode, "");
+
+        // 10) 已过的时刻必须顺延到明天（"10:05:00" 会被 DateTime.TryParse
+        //     解析成"今天 10:05"，若不特判就会排到一个已经过去的时间）
+        var pastTime = DateTime.Now.AddMinutes(-1).ToString("HH:mm:ss");
+        var pastResp = await http.PostAsync("/api/reminder",
+            new StringContent(JsonSerializer.Serialize(new { title = "已过时刻", atTime = pastTime }),
+                Encoding.UTF8, "application/json"));
+        var pastBody = await pastResp.Content.ReadAsStringAsync();
+        var pastLeft = pastResp.IsSuccessStatusCode
+            ? JsonDocument.Parse(pastBody).RootElement.GetProperty("secondsLeft").GetDouble()
+            : -1;
+        Case("已过的时刻顺延到明天（约 24h 后）",
+            pastLeft > 86000 && pastLeft < 86500,
+            $"atTime={pastTime} secondsLeft={pastLeft:F0}");
     }
     finally
     {

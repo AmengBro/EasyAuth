@@ -517,24 +517,26 @@ public class EasyAuthApiService : IHostedService, IDisposable
     /// <summary>
     /// 解析绝对时间。支持 "HH:mm:ss" / "HH:mm"（当天，已过则顺延到明天）
     /// 与 ISO 8601（如 2026-10-24T10:05:00）。
+    /// 注意必须先用 TimeSpan 分支——"10:05:00" 也能被 DateTime.TryParse
+    /// 解析成"今天 10:05"，那样就不会顺延，直接排到一个已过去的时间。
     /// </summary>
     private static bool TryParseAtTime(string input, out DateTime result)
     {
         result = default;
         var text = input.Trim();
 
-        // ISO 8601
-        if (DateTime.TryParse(text, out var iso))
-        {
-            result = iso;
-            return true;
-        }
-
         // 当天时刻 HH:mm[:ss]，已过则顺延明天
         if (TimeSpan.TryParse(text, out var timeOfDay))
         {
             var today = DateTime.Today + timeOfDay;
             result = today > DateTime.Now ? today : today.AddDays(1);
+            return true;
+        }
+
+        // ISO 8601（带日期）
+        if (DateTime.TryParse(text, out var iso))
+        {
+            result = iso;
             return true;
         }
 
@@ -622,83 +624,81 @@ public class EasyAuthApiService : IHostedService, IDisposable
 
     private static void FireReminder(ScheduledReminder r)
     {
-        try
+        var title = string.IsNullOrWhiteSpace(r.Title) ? "提醒" : r.Title;
+        var body = string.IsNullOrWhiteSpace(r.Message) ? title : r.Message;
+
+        var maskSeconds = r.MaskDurationSeconds ?? r.DurationSeconds;
+        var overlaySeconds = r.OverlayDurationSeconds ?? r.DurationSeconds;
+
+        // ShowNotification 内部会操作 UI，必须在 Avalonia UI 线程上调用；
+        // 从线程池线程直接调会抛 InvalidOperationException(Call from invalid thread)。
+        // 整个请求的构建与发送都切到 UI 线程，避免跨线程访问 ObservableRecipient。
+        Avalonia.Threading.Dispatcher.UIThread.Post(() =>
         {
-            var provider = EasyAuthNotificationProvider.Current;
-            if (provider == null)
+            try
+            {
+                var provider = EasyAuthNotificationProvider.Current;
+                if (provider == null)
+                {
+                    AuditLogService.Write(PluginPaths.PluginDirectory, "API-REMINDER-FAIL",
+                        detail: $"id={r.Id} 提醒提供方未就绪");
+                    return;
+                }
+
+                var request = new ClassIsland.Core.Models.Notification.NotificationRequest
+                {
+                    MaskContent = ClassIsland.Core.Models.Notification.NotificationContent
+                        .CreateTwoIconsMask(title),
+                    OverlayContent = ClassIsland.Core.Models.Notification.NotificationContent
+                        .CreateSimpleTextContent(body)
+                };
+                request.MaskContent.Duration = TimeSpan.FromSeconds(maskSeconds);
+                request.OverlayContent.Duration = TimeSpan.FromSeconds(overlaySeconds);
+
+                if (r.SpeechEnabled == true)
+                {
+                    request.MaskContent.IsSpeechEnabled = true;
+                    request.OverlayContent.IsSpeechEnabled = true;
+                }
+
+                var settings = request.RequestNotificationSettings;
+                var anySpecified = r.EffectEnabled != null || r.SoundEnabled != null ||
+                                   r.SpeechEnabled != null || r.TopmostEnabled != null ||
+                                   !string.IsNullOrEmpty(r.SoundPath);
+                if (anySpecified)
+                {
+                    settings.IsSettingsEnabled = true;
+                    if (r.EffectEnabled != null)
+                    {
+                        settings.IsNotificationEffectEnabled = r.EffectEnabled.Value;
+                    }
+                    if (r.SoundEnabled != null)
+                    {
+                        settings.IsNotificationSoundEnabled = r.SoundEnabled.Value;
+                    }
+                    if (!string.IsNullOrEmpty(r.SoundPath))
+                    {
+                        settings.NotificationSoundPath = r.SoundPath;
+                    }
+                    if (r.TopmostEnabled != null)
+                    {
+                        settings.IsNotificationTopmostEnabled = r.TopmostEnabled.Value;
+                    }
+                }
+
+                provider.ShowNotification(request);
+
+                AuditLogService.Write(PluginPaths.PluginDirectory, "API-REMINDER-OK",
+                    detail: $"id={r.Id} title={r.Title} mask={maskSeconds:F0}s overlay={overlaySeconds:F0}s " +
+                            $"effect={r.EffectEnabled?.ToString() ?? "-"} sound={r.SoundEnabled?.ToString() ?? "-"} " +
+                            $"speech={r.SpeechEnabled?.ToString() ?? "-"} topmost={r.TopmostEnabled?.ToString() ?? "-"}");
+            }
+            catch (Exception ex)
             {
                 AuditLogService.Write(PluginPaths.PluginDirectory, "API-REMINDER-FAIL",
-                    detail: $"id={r.Id} 提醒提供方未就绪");
-                return;
+                    detail: $"id={r.Id} ex={ex.GetType().Name} {ex.Message}");
             }
-
-            // 标题走遮罩（短），正文走浮层（长）；只有标题时正文留空
-            var title = string.IsNullOrWhiteSpace(r.Title) ? "提醒" : r.Title;
-            var body = string.IsNullOrWhiteSpace(r.Message) ? title : r.Message;
-
-            var request = new ClassIsland.Core.Models.Notification.NotificationRequest
-            {
-                MaskContent = ClassIsland.Core.Models.Notification.NotificationContent
-                    .CreateTwoIconsMask(title),
-                OverlayContent = ClassIsland.Core.Models.Notification.NotificationContent
-                    .CreateSimpleTextContent(body)
-            };
-
-            // 标题 / 正文时长分开控制，未单独指定则都用兜底时长
-            var maskSeconds = r.MaskDurationSeconds ?? r.DurationSeconds;
-            var overlaySeconds = r.OverlayDurationSeconds ?? r.DurationSeconds;
-            request.MaskContent.Duration = TimeSpan.FromSeconds(maskSeconds);
-            request.OverlayContent.Duration = TimeSpan.FromSeconds(overlaySeconds);
-
-            // 语音播报：遮罩与正文都朗读
-            if (r.SpeechEnabled == true)
-            {
-                request.MaskContent.IsSpeechEnabled = true;
-                request.OverlayContent.IsSpeechEnabled = true;
-            }
-
-            // 特效 / 音效 / 置顶：走本次提醒的专用设置。
-            // 注意 NotificationSettings.IsSettingsEnabled 必须为 true 才生效，
-            // 而一旦生效，未指定的字段会取 NotificationSettings 的默认值
-            // （特效默认开、音效/语音/置顶默认关），所以只在调用方
-            // 显式指定过其中任意一项时才开启这套设置。
-            var settings = request.RequestNotificationSettings;
-            var anySpecified = r.EffectEnabled != null || r.SoundEnabled != null ||
-                               r.SpeechEnabled != null || r.TopmostEnabled != null ||
-                               !string.IsNullOrEmpty(r.SoundPath);
-            if (anySpecified)
-            {
-                settings.IsSettingsEnabled = true;
-                if (r.EffectEnabled != null)
-                {
-                    settings.IsNotificationEffectEnabled = r.EffectEnabled.Value;
-                }
-                if (r.SoundEnabled != null)
-                {
-                    settings.IsNotificationSoundEnabled = r.SoundEnabled.Value;
-                }
-                if (!string.IsNullOrEmpty(r.SoundPath))
-                {
-                    settings.NotificationSoundPath = r.SoundPath;
-                }
-                if (r.TopmostEnabled != null)
-                {
-                    settings.IsNotificationTopmostEnabled = r.TopmostEnabled.Value;
-                }
-            }
-
-            provider.ShowNotification(request);
-
-            AuditLogService.Write(PluginPaths.PluginDirectory, "API-REMINDER-OK",
-                detail: $"id={r.Id} title={r.Title} mask={maskSeconds:F0}s overlay={overlaySeconds:F0}s " +
-                        $"effect={r.EffectEnabled?.ToString() ?? "-"} sound={r.SoundEnabled?.ToString() ?? "-"} " +
-                        $"speech={r.SpeechEnabled?.ToString() ?? "-"} topmost={r.TopmostEnabled?.ToString() ?? "-"}");
-        }
-        catch (Exception ex)
-        {
-            AuditLogService.Write(PluginPaths.PluginDirectory, "API-REMINDER-FAIL",
-                detail: $"id={r.Id} ex={ex.GetType().Name} {ex.Message}");
-        }
+        });
     }
 
     // ---------- 工具 ----------
