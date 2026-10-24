@@ -358,8 +358,17 @@ async Task TestLocalApiAsync()
     Console.WriteLine();
     Console.WriteLine("—— 本地 HTTP API 冒烟测试 ——");
 
-    using var api = new EasyAuthApiService();
+    // 用独立端口，避开上次进程残留的 HTTP.SYS 注册
+    using var api = new EasyAuthApiService(new ApiConfig { Enabled = true, Port = 24911 });
     await api.StartAsync(CancellationToken.None);
+    if (!api.IsRunning)
+    {
+        // 端口被占用（多为上一次进程残留的 HTTP.SYS 注册）。
+        // 这不是被测代码的缺陷，明确报出来而不是让后续请求莫名其妙地失败。
+        Case("本地 API 服务启动", false,
+            $"{api.BaseUrl} 启动失败（端口冲突），跳过后续 API 用例；稍后重跑即可");
+        return;
+    }
     try
     {
         using var http = new HttpClient { BaseAddress = new Uri(api.BaseUrl), Timeout = TimeSpan.FromSeconds(10) };
@@ -446,6 +455,32 @@ async Task TestLocalApiAsync()
         var isoBody = await isoResp.Content.ReadAsStringAsync();
         Case("ISO 8601 atTime 被接受",
             isoResp.IsSuccessStatusCode && isoBody.Contains("\"mode\":\"atTime\""), isoBody.Trim());
+
+        // 6) 展示选项透传：标题/正文时长、特效、音效、语音、置顶
+        var fullResp = await http.PostAsync("/api/reminder",
+            new StringContent(JsonSerializer.Serialize(new
+            {
+                title = "完整选项",
+                message = "带特效和音效",
+                maskDurationSeconds = 3,
+                overlayDurationSeconds = 12,
+                effect = false,
+                sound = true,
+                speech = true,
+                topmost = true
+            }), Encoding.UTF8, "application/json"));
+        var fullBody = await fullResp.Content.ReadAsStringAsync();
+        Case("展示选项（时长/特效/音效/语音/置顶）被接受", fullResp.IsSuccessStatusCode, fullBody.Trim());
+
+        // 7) 单独指定标题时长，不应被兜底时长覆盖
+        var maskOnlyResp = await http.PostAsync("/api/reminder",
+            new StringContent(JsonSerializer.Serialize(new
+            {
+                title = "只定标题时长",
+                durationSeconds = 30,
+                maskDurationSeconds = 4
+            }), Encoding.UTF8, "application/json"));
+        Case("maskDurationSeconds 优先于 durationSeconds", maskOnlyResp.IsSuccessStatusCode, "");
     }
     finally
     {

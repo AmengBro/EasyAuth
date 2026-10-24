@@ -240,20 +240,32 @@ EasyAuth 在 `127.0.0.1:24721` 起一个本地 HTTP 服务（**只绑定回环�
 | `delaySeconds` | 相对延时秒数 | `600` |
 | 都不传 | **立即触发** | —— |
 
-```bash
-# 立即弹出
-curl -X POST http://127.0.0.1:24721/api/reminder \
-  -H "Content-Type: application/json" \
-  -d '{"title":"该上课了","message":"下节是数学"}'
+展示选项（均可选，不传则用 ClassIsland 的默认设置）：
 
-# 10:05 整点提醒（配合 /api/next-class 拿到的上课时间）
+| 字段 | 含义 | 默认 |
+|---|---|---|
+| `maskDurationSeconds` | **标题（遮罩）**停留秒数，优先于 `durationSeconds` | 5 |
+| `overlayDurationSeconds` | **正文（浮层）**停留秒数，优先于 `durationSeconds` | 5 |
+| `durationSeconds` | 兜底时长，未单独指定标题/正文时两者都用它 | 5 |
+| `effect` | 是否启用**强调特效**（涟漪等） | ClassIsland 默认 |
+| `sound` | 是否播放**音效** | ClassIsland 默认 |
+| `soundPath` | 自定义音效文件路径，留空用默认音效 | 空 |
+| `speech` | 是否**语音播报** | ClassIsland 默认 |
+| `topmost` | 提醒时是否**置顶**主界面 | ClassIsland 默认 |
+
+```bash
+# 10:05 整点提醒：标题 3 秒、正文 12 秒、带音效、语音播报、置顶
 curl -X POST http://127.0.0.1:24721/api/reminder \
   -H "Content-Type: application/json" \
-  -d '{"title":"该上课了","message":"下节是数学","atTime":"10:05:00","durationSeconds":8}'
+  -d '{"title":"该上课了","message":"下节是数学，请准备课本",
+       "atTime":"10:05:00","maskDurationSeconds":3,"overlayDurationSeconds":12,
+       "sound":true,"speech":true,"topmost":true}'
 ```
 
-到时间后通过 ClassIsland 的通知系统弹出（EasyAuth 自带的提醒渠道）。
-`durationSeconds` 控制通知停留时长（1~600，默认 5）。到点即触发，精度 250ms。
+到时间后通过 ClassIsland 的通知系统弹出（EasyAuth 自带的提醒渠道）。到点即触发，精度 250ms。
+
+> 一旦指定了 `effect`/`sound`/`speech`/`topmost` 中任意一项，本次提醒会启用一套专用设置，
+> 未指定的项取 ClassIsland 的默认值（特效默认开、音效/语音/置顶默认关）。
 
 ### 安全说明
 

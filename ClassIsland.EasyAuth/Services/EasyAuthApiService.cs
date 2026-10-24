@@ -31,7 +31,22 @@ public class ScheduledReminder
     public string Message { get; set; } = "";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime DueAt { get; set; }
+    /// <summary>兜底时长（秒），未单独指定标题/正文时长时两者都用它</summary>
     public double DurationSeconds { get; set; } = 5;
+    /// <summary>标题（遮罩）时长，覆盖 DurationSeconds</summary>
+    public double? MaskDurationSeconds { get; set; }
+    /// <summary>正文（浮层）时长，覆盖 DurationSeconds</summary>
+    public double? OverlayDurationSeconds { get; set; }
+    /// <summary>是否启用强调特效（涟漪等）</summary>
+    public bool? EffectEnabled { get; set; }
+    /// <summary>是否播放音效</summary>
+    public bool? SoundEnabled { get; set; }
+    /// <summary>自定义音效路径，留空用默认</summary>
+    public string? SoundPath { get; set; }
+    /// <summary>是否语音播报</summary>
+    public bool? SpeechEnabled { get; set; }
+    /// <summary>提醒时是否置顶主界面</summary>
+    public bool? TopmostEnabled { get; set; }
     public bool Fired { get; set; }
 }
 
@@ -51,33 +66,71 @@ public class EasyAuthApiService : IHostedService, IDisposable
 
     private readonly List<ScheduledReminder> _reminders = new();
     private readonly object _reminderLock = new();
+    private readonly ApiConfig? _injectedConfig;
     private HttpListener? _listener;
     private CancellationTokenSource _cts = new();
     private Task? _listenTask;
     private Task? _timerTask;
+
+    /// <param name="config">
+    /// 注入配置。为 null 时从插件目录 api.json 读取（生产路径）；
+    /// 自测时可传入以指定独立端口，避开残留的 HTTP.SYS 注册。
+    /// </param>
+    public EasyAuthApiService(ApiConfig? config = null)
+    {
+        _injectedConfig = config;
+    }
 
     public ApiConfig Config { get; private set; } = new();
 
     /// <summary>监听地址，供日志与界面展示。</summary>
     public string BaseUrl => $"http://127.0.0.1:{Config.Port}";
 
+    /// <summary>
+    /// 服务是否已成功监听。端口被占用（HTTP.SYS 前缀注册未释放等）时为 false，
+    /// 此时所有课程/提醒接口不可用，但不影响 ClassIsland 本体与认证功能。
+    /// </summary>
+    public bool IsRunning => _listener is { IsListening: true };
+
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-        LoadConfig();
+        if (_injectedConfig != null)
+        {
+            Config = _injectedConfig;
+        }
+        else
+        {
+            LoadConfig();
+        }
         if (!Config.Enabled)
         {
             return;
         }
-        try
+
+        // HttpListener 基于 HTTP.SYS，进程异常退出后前缀注册可能残留，
+        // 端口看似被占用。重试一次，给内核一点释放时间。
+        for (var attempt = 1; attempt <= 2 && _listener == null; attempt++)
         {
-            _listener = new HttpListener();
-            _listener.Prefixes.Add($"http://127.0.0.1:{Config.Port}/");
-            _listener.Start();
+            try
+            {
+                var candidate = new HttpListener();
+                candidate.Prefixes.Add($"http://127.0.0.1:{Config.Port}/");
+                candidate.Start();
+                _listener = candidate;
+            }
+            catch (Exception ex)
+            {
+                AuditLogService.Write(PluginPaths.PluginDirectory, "API-START-FAIL",
+                    detail: $"attempt={attempt} port={Config.Port} ex={ex.GetType().Name} {ex.Message}");
+                if (attempt == 1)
+                {
+                    await Task.Delay(800, cancellationToken);
+                }
+            }
         }
-        catch (Exception ex)
+
+        if (_listener == null)
         {
-            AuditLogService.Write(PluginPaths.PluginDirectory, "API-START-FAIL",
-                detail: $"port={Config.Port} ex={ex.GetType().Name} {ex.Message}");
             return;
         }
 
@@ -394,7 +447,14 @@ public class EasyAuthApiService : IHostedService, IDisposable
             Title = req.Title ?? "",
             Message = req.Message ?? "",
             DueAt = dueAt,
-            DurationSeconds = req.DurationSeconds is > 0 and < 600 ? req.DurationSeconds.Value : 5
+            DurationSeconds = NormalizeDuration(req.DurationSeconds),
+            MaskDurationSeconds = req.MaskDurationSeconds is > 0 ? req.MaskDurationSeconds : null,
+            OverlayDurationSeconds = req.OverlayDurationSeconds is > 0 ? req.OverlayDurationSeconds : null,
+            EffectEnabled = req.Effect,
+            SoundEnabled = req.Sound,
+            SoundPath = string.IsNullOrWhiteSpace(req.SoundPath) ? null : req.SoundPath,
+            SpeechEnabled = req.Speech,
+            TopmostEnabled = req.Topmost
         };
         lock (_reminderLock)
         {
@@ -552,24 +612,67 @@ public class EasyAuthApiService : IHostedService, IDisposable
                 return;
             }
 
+            // 标题走遮罩（短），正文走浮层（长）；只有标题时正文留空
             var title = string.IsNullOrWhiteSpace(r.Title) ? "提醒" : r.Title;
-            var body = string.IsNullOrWhiteSpace(r.Message)
-                ? title
-                : $"{title}：{r.Message}";
+            var body = string.IsNullOrWhiteSpace(r.Message) ? title : r.Message;
 
             var request = new ClassIsland.Core.Models.Notification.NotificationRequest
             {
                 MaskContent = ClassIsland.Core.Models.Notification.NotificationContent
-                    .CreateTwoIconsMask(body),
+                    .CreateTwoIconsMask(title),
                 OverlayContent = ClassIsland.Core.Models.Notification.NotificationContent
                     .CreateSimpleTextContent(body)
             };
-            request.MaskContent.Duration = TimeSpan.FromSeconds(r.DurationSeconds);
-            request.OverlayContent.Duration = TimeSpan.FromSeconds(r.DurationSeconds);
+
+            // 标题 / 正文时长分开控制，未单独指定则都用兜底时长
+            var maskSeconds = r.MaskDurationSeconds ?? r.DurationSeconds;
+            var overlaySeconds = r.OverlayDurationSeconds ?? r.DurationSeconds;
+            request.MaskContent.Duration = TimeSpan.FromSeconds(maskSeconds);
+            request.OverlayContent.Duration = TimeSpan.FromSeconds(overlaySeconds);
+
+            // 语音播报：遮罩与正文都朗读
+            if (r.SpeechEnabled == true)
+            {
+                request.MaskContent.IsSpeechEnabled = true;
+                request.OverlayContent.IsSpeechEnabled = true;
+            }
+
+            // 特效 / 音效 / 置顶：走本次提醒的专用设置。
+            // 注意 NotificationSettings.IsSettingsEnabled 必须为 true 才生效，
+            // 而一旦生效，未指定的字段会取 NotificationSettings 的默认值
+            // （特效默认开、音效/语音/置顶默认关），所以只在调用方
+            // 显式指定过其中任意一项时才开启这套设置。
+            var settings = request.RequestNotificationSettings;
+            var anySpecified = r.EffectEnabled != null || r.SoundEnabled != null ||
+                               r.SpeechEnabled != null || r.TopmostEnabled != null ||
+                               !string.IsNullOrEmpty(r.SoundPath);
+            if (anySpecified)
+            {
+                settings.IsSettingsEnabled = true;
+                if (r.EffectEnabled != null)
+                {
+                    settings.IsNotificationEffectEnabled = r.EffectEnabled.Value;
+                }
+                if (r.SoundEnabled != null)
+                {
+                    settings.IsNotificationSoundEnabled = r.SoundEnabled.Value;
+                }
+                if (!string.IsNullOrEmpty(r.SoundPath))
+                {
+                    settings.NotificationSoundPath = r.SoundPath;
+                }
+                if (r.TopmostEnabled != null)
+                {
+                    settings.IsNotificationTopmostEnabled = r.TopmostEnabled.Value;
+                }
+            }
+
             provider.ShowNotification(request);
 
             AuditLogService.Write(PluginPaths.PluginDirectory, "API-REMINDER-OK",
-                detail: $"id={r.Id} title={r.Title}");
+                detail: $"id={r.Id} title={r.Title} mask={maskSeconds:F0}s overlay={overlaySeconds:F0}s " +
+                        $"effect={r.EffectEnabled?.ToString() ?? "-"} sound={r.SoundEnabled?.ToString() ?? "-"} " +
+                        $"speech={r.SpeechEnabled?.ToString() ?? "-"} topmost={r.TopmostEnabled?.ToString() ?? "-"}");
         }
         catch (Exception ex)
         {
@@ -614,6 +717,27 @@ public class EasyAuthApiService : IHostedService, IDisposable
         public double? DelaySeconds { get; set; }
         /// <summary>绝对时间："HH:mm:ss"（当天，已过则顺延明天）或 ISO 8601。</summary>
         public string? AtTime { get; set; }
+        /// <summary>兜底时长（秒），1~600。未单独指定标题/正文时长时两者都用它。</summary>
         public double? DurationSeconds { get; set; }
+        /// <summary>标题（遮罩）时长（秒），优先于 DurationSeconds。</summary>
+        public double? MaskDurationSeconds { get; set; }
+        /// <summary>正文（浮层）时长（秒），优先于 DurationSeconds。</summary>
+        public double? OverlayDurationSeconds { get; set; }
+        /// <summary>是否启用强调特效（涟漪等）。不传则用 ClassIsland 默认。</summary>
+        public bool? Effect { get; set; }
+        /// <summary>是否播放音效。</summary>
+        public bool? Sound { get; set; }
+        /// <summary>自定义音效路径，留空用默认音效。</summary>
+        public string? SoundPath { get; set; }
+        /// <summary>是否语音播报。</summary>
+        public bool? Speech { get; set; }
+        /// <summary>提醒时是否置顶主界面。</summary>
+        public bool? Topmost { get; set; }
+    }
+
+    /// <summary>时长归一化：未传或越界时回退默认 5 秒。</summary>
+    private static double NormalizeDuration(double? seconds)
+    {
+        return seconds is > 0 and < 600 ? seconds.Value : 5;
     }
 }
