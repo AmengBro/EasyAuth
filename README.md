@@ -232,14 +232,28 @@ EasyAuth 在 `127.0.0.1:24721` 起一个本地 HTTP 服务（**只绑定回环�
 
 ### 创建提醒
 
+三种定时方式，按优先级取第一个有效的：
+
+| 字段 | 含义 | 示例 |
+|---|---|---|
+| `atTime` | **绝对时间**（推荐）。`"HH:mm:ss"` 当天时刻，已过则顺延到明天；也支持 ISO 8601 | `"10:05:00"` |
+| `delaySeconds` | 相对延时秒数 | `600` |
+| 都不传 | **立即触发** | —— |
+
 ```bash
+# 立即弹出
 curl -X POST http://127.0.0.1:24721/api/reminder \
   -H "Content-Type: application/json" \
-  -d '{"title":"该上课了","message":"下节是数学","delaySeconds":600,"durationSeconds":8}'
+  -d '{"title":"该上课了","message":"下节是数学"}'
+
+# 10:05 整点提醒（配合 /api/next-class 拿到的上课时间）
+curl -X POST http://127.0.0.1:24721/api/reminder \
+  -H "Content-Type: application/json" \
+  -d '{"title":"该上课了","message":"下节是数学","atTime":"10:05:00","durationSeconds":8}'
 ```
 
 到时间后通过 ClassIsland 的通知系统弹出（EasyAuth 自带的提醒渠道）。
-`delaySeconds` 为延时秒数，`durationSeconds` 控制通知停留时长（1~600，默认 5）。
+`durationSeconds` 控制通知停留时长（1~600，默认 5）。到点即触发，精度 250ms。
 
 ### 安全说明
 

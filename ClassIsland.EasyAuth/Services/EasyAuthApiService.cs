@@ -366,12 +366,34 @@ public class EasyAuthApiService : IHostedService, IDisposable
             return;
         }
 
-        var delay = Math.Max(0, req.DelaySeconds ?? 0);
+        // 三种定时方式，按优先级：
+        //   1) atTime   绝对时间（"HH:mm:ss" 或 ISO 8601），已过则算明天
+        //   2) delaySeconds 相对延时秒数
+        //   3) 都未提供  立即触发
+        DateTime dueAt;
+        string mode;
+        if (!string.IsNullOrWhiteSpace(req.AtTime))
+        {
+            if (!TryParseAtTime(req.AtTime, out dueAt))
+            {
+                await WriteJsonAsync(ctx, 400,
+                    new { error = "atTime 格式不正确，支持 \"HH:mm:ss\" 或 ISO 8601（如 2026-10-24T10:05:00）" });
+                return;
+            }
+            mode = "atTime";
+        }
+        else
+        {
+            var delay = Math.Max(0, req.DelaySeconds ?? 0);
+            dueAt = DateTime.Now.AddSeconds(delay);
+            mode = delay > 0 ? "delay" : "immediate";
+        }
+
         var reminder = new ScheduledReminder
         {
             Title = req.Title ?? "",
             Message = req.Message ?? "",
-            DueAt = DateTime.Now.AddSeconds(delay),
+            DueAt = dueAt,
             DurationSeconds = req.DurationSeconds is > 0 and < 600 ? req.DurationSeconds.Value : 5
         };
         lock (_reminderLock)
@@ -380,14 +402,63 @@ public class EasyAuthApiService : IHostedService, IDisposable
         }
 
         AuditLogService.Write(PluginPaths.PluginDirectory, "API-REMINDER",
-            detail: $"id={reminder.Id} delay={delay}s title={reminder.Title}");
+            detail: $"id={reminder.Id} mode={mode} dueAt={reminder.DueAt:HH:mm:ss} title={reminder.Title}");
+
+        // 立即触发的（无延时、时间已过）不等下一轮 tick，当场发掉。
+        // 通知发送失败绝不能影响接口响应——这里必须兜住。
+        if (mode == "immediate" || reminder.DueAt <= DateTime.Now)
+        {
+            lock (_reminderLock)
+            {
+                _reminders.Remove(reminder);
+                reminder.Fired = true;
+                _reminders.Add(reminder);
+            }
+            try
+            {
+                FireReminder(reminder);
+            }
+            catch (Exception ex)
+            {
+                AuditLogService.Write(PluginPaths.PluginDirectory, "API-REMINDER-FAIL",
+                    detail: $"id={reminder.Id} ex={ex.GetType().Name} {ex.Message}");
+            }
+        }
 
         await WriteJsonAsync(ctx, 200, new
         {
             id = reminder.Id,
+            mode,
             dueAt = reminder.DueAt,
-            delaySeconds = delay
+            secondsLeft = Math.Max(0, (reminder.DueAt - DateTime.Now).TotalSeconds)
         });
+    }
+
+    /// <summary>
+    /// 解析绝对时间。支持 "HH:mm:ss" / "HH:mm"（当天，已过则顺延到明天）
+    /// 与 ISO 8601（如 2026-10-24T10:05:00）。
+    /// </summary>
+    private static bool TryParseAtTime(string input, out DateTime result)
+    {
+        result = default;
+        var text = input.Trim();
+
+        // ISO 8601
+        if (DateTime.TryParse(text, out var iso))
+        {
+            result = iso;
+            return true;
+        }
+
+        // 当天时刻 HH:mm[:ss]，已过则顺延明天
+        if (TimeSpan.TryParse(text, out var timeOfDay))
+        {
+            var today = DateTime.Today + timeOfDay;
+            result = today > DateTime.Now ? today : today.AddDays(1);
+            return true;
+        }
+
+        return false;
     }
 
     private async Task HandleListRemindersAsync(HttpListenerContext ctx)
@@ -436,7 +507,8 @@ public class EasyAuthApiService : IHostedService, IDisposable
 
     private async Task ReminderTimerLoopAsync()
     {
-        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+        // 250ms 粒度：到点即触发，不再有最长 1 秒的等待
+        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(250));
         while (!_cts.IsCancellationRequested)
         {
             try
@@ -538,7 +610,10 @@ public class EasyAuthApiService : IHostedService, IDisposable
     {
         public string? Title { get; set; }
         public string? Message { get; set; }
+        /// <summary>相对延时秒数。与 atTime 同时存在时 atTime 优先。</summary>
         public double? DelaySeconds { get; set; }
+        /// <summary>绝对时间："HH:mm:ss"（当天，已过则顺延明天）或 ISO 8601。</summary>
+        public string? AtTime { get; set; }
         public double? DurationSeconds { get; set; }
     }
 }

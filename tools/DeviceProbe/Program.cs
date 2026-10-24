@@ -403,6 +403,49 @@ async Task TestLocalApiAsync()
         var emptyResp = await http.PostAsync("/api/reminder",
             new StringContent("{}", Encoding.UTF8, "application/json"));
         Case("空提醒被参数校验拒绝(400)", emptyResp.StatusCode == HttpStatusCode.BadRequest, "");
+
+        // —— 三种定时方式 ——
+        // 1) 立即触发：不传延时，应 mode=immediate 且 secondsLeft≈0
+        var nowResp = await http.PostAsync("/api/reminder",
+            new StringContent(JsonSerializer.Serialize(new { title = "立即" }), Encoding.UTF8, "application/json"));
+        var nowBody = await nowResp.Content.ReadAsStringAsync();
+        Case("不传延时=立即触发(mode=immediate)",
+            nowResp.IsSuccessStatusCode && nowBody.Contains("\"mode\":\"immediate\""),
+            $"HTTP {(int)nowResp.StatusCode} {nowBody.Trim()}");
+
+        // 2) 相对延时
+        var delayResp = await http.PostAsync("/api/reminder",
+            new StringContent(JsonSerializer.Serialize(new { title = "延时", delaySeconds = 3 }), Encoding.UTF8, "application/json"));
+        var delayBody = await delayResp.Content.ReadAsStringAsync();
+        var delayJson = JsonDocument.Parse(delayBody).RootElement;
+        Case("delaySeconds 走延时模式",
+            delayResp.IsSuccessStatusCode && delayJson.GetProperty("mode").GetString() == "delay" &&
+            Math.Abs(delayJson.GetProperty("secondsLeft").GetDouble() - 3) < 1.5,
+            $"mode={delayJson.GetProperty("mode").GetString()} left={delayJson.GetProperty("secondsLeft").GetDouble():F1}");
+
+        // 3) 绝对时间：HH:mm:ss，取 1 分钟后
+        var atTime = DateTime.Now.AddMinutes(1).ToString("HH:mm:ss");
+        var atResp = await http.PostAsync("/api/reminder",
+            new StringContent(JsonSerializer.Serialize(new { title = "定点", atTime }), Encoding.UTF8, "application/json"));
+        var atBody = await atResp.Content.ReadAsStringAsync();
+        var atJson = JsonDocument.Parse(atBody).RootElement;
+        Case("atTime 走定点模式且时间正确",
+            atResp.IsSuccessStatusCode && atJson.GetProperty("mode").GetString() == "atTime" &&
+            Math.Abs(atJson.GetProperty("secondsLeft").GetDouble() - 60) < 3,
+            $"mode={atJson.GetProperty("mode").GetString()} atTime={atTime} left={atJson.GetProperty("secondsLeft").GetDouble():F0}");
+
+        // 4) 非法 atTime 应被拒
+        var badResp = await http.PostAsync("/api/reminder",
+            new StringContent(JsonSerializer.Serialize(new { title = "坏", atTime = "不是时间" }), Encoding.UTF8, "application/json"));
+        Case("非法 atTime 被拒绝(400)", badResp.StatusCode == HttpStatusCode.BadRequest, "");
+
+        // 5) ISO 8601 绝对时间
+        var isoResp = await http.PostAsync("/api/reminder",
+            new StringContent(JsonSerializer.Serialize(new { title = "ISO", atTime = DateTime.Now.AddMinutes(2).ToString("s") }),
+                Encoding.UTF8, "application/json"));
+        var isoBody = await isoResp.Content.ReadAsStringAsync();
+        Case("ISO 8601 atTime 被接受",
+            isoResp.IsSuccessStatusCode && isoBody.Contains("\"mode\":\"atTime\""), isoBody.Trim());
     }
     finally
     {
