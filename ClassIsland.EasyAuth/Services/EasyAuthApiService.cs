@@ -411,7 +411,27 @@ public class EasyAuthApiService : IHostedService, IDisposable
     {
         using var reader = new StreamReader(ctx.Request.InputStream, Encoding.UTF8);
         var body = await reader.ReadToEndAsync();
-        var req = JsonSerializer.Deserialize<ReminderRequest>(body, JsonOptions) ?? new ReminderRequest();
+
+        ReminderRequest req;
+        try
+        {
+            req = JsonSerializer.Deserialize<ReminderRequest>(body, JsonOptions) ?? new ReminderRequest();
+        }
+        catch (JsonException)
+        {
+            // 常见于 Windows 下 curl 的单引号被原样传进请求体（CMD 不把单引号当引号用），
+            // 或 JSON 里有尾逗号/未转义引号。给人话，别把解析器内部错误抛出去。
+            AuditLogService.Write(PluginPaths.PluginDirectory, "API-REMINDER-BADJSON",
+                detail: $"len={body.Length} head={body[..Math.Min(40, body.Length)]}");
+            await WriteJsonAsync(ctx, 400, new
+            {
+                error = "请求体不是合法的 JSON",
+                hint = "Windows CMD 下 curl 的单引号会被原样传进请求体；" +
+                       "请改用 PowerShell：Invoke-RestMethod <url> -Method Post -ContentType 'application/json' -Body '<json>'，" +
+                       "或把 JSON 写进文件后用 -d @body.json"
+            });
+            return;
+        }
 
         if (string.IsNullOrWhiteSpace(req.Title) && string.IsNullOrWhiteSpace(req.Message))
         {

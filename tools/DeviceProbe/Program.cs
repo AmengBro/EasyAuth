@@ -472,7 +472,15 @@ async Task TestLocalApiAsync()
         var fullBody = await fullResp.Content.ReadAsStringAsync();
         Case("展示选项（时长/特效/音效/语音/置顶）被接受", fullResp.IsSuccessStatusCode, fullBody.Trim());
 
-        // 7) 单独指定标题时长，不应被兜底时长覆盖
+        // 8) 畸形 JSON：应返回 400 + 人话提示，而不是 500 吐解析器内部错误
+        var badJsonResp = await http.PostAsync("/api/reminder",
+            new StringContent("'{\"title\":\"x\"}'", Encoding.UTF8, "application/json"));
+        var badJsonBody = await badJsonResp.Content.ReadAsStringAsync();
+        Case("畸形 JSON 返回 400 且带提示",
+            badJsonResp.StatusCode == HttpStatusCode.BadRequest && badJsonBody.Contains("hint"),
+            badJsonBody.Trim());
+
+        // 9) 单独指定标题时长，不应被兜底时长覆盖
         var maskOnlyResp = await http.PostAsync("/api/reminder",
             new StringContent(JsonSerializer.Serialize(new
             {
