@@ -28,13 +28,13 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
     private readonly StackPanel _editPanel = new();
     private readonly TextBlock _multiHint = new();
     private readonly TextBlock _userHint = new();
-    private readonly CheckBox _chkMulti = new() { Content = "多分区同时校验（实验性 · 下拉框显示设备名，按设备校验其全部分区）", Margin = new Thickness(0, 2, 0, 0) };
+    private readonly CheckBox _chkMulti = new() { Content = "多分区同时校验（实验性 · 未在所有设备验证，可能存不下凭据）", Margin = new Thickness(0, 2, 0, 0) };
     private readonly CheckBox _chkSn = new() { Content = "磁盘序列号绑定（防换盘克隆）", Margin = new Thickness(0, 2, 0, 0) };
     private readonly CheckBox _chkVolume = new() { Content = "卷标识绑定（防同盘另一分区）", Margin = new Thickness(0, 2, 0, 0) };
     private readonly CheckBox _chkToken = new() { Content = "token 校验（防复制密钥文件）", Margin = new Thickness(0, 2, 0, 0) };
     private readonly CheckBox _chkCounter = new() { Content = "克隆计数（防过期克隆盘）", Margin = new Thickness(0, 2, 0, 0) };
     private readonly CheckBox _chkBrand = new() { Content = "品牌提示（仅提示，不参与判定）", Margin = new Thickness(0, 2, 0, 0) };
-    private readonly CheckBox _chkUser = new() { Content = "Windows 账户绑定（实验性 · DPAPI，需重新配对）", Margin = new Thickness(0, 2, 0, 0) };
+    private readonly CheckBox _chkUser = new() { Content = "Windows 账户绑定（实验性 · DPAPI，权限不足时可能无法使用）", Margin = new Thickness(0, 2, 0, 0) };
     private readonly Button _readButton = new() { Content = "读取", Margin = new Thickness(0, 8, 0, 0) };
     private readonly Button _auditButton = new() { Content = "查看审计日志", Margin = new Thickness(8, 0, 0, 0) };
     private readonly TextBlock _deviceInfo = new() { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 0) };
@@ -81,12 +81,16 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
         _editPanel.Children.Add(_chkMulti);
         _multiHint = new TextBlock
         {
-            Text = "⚠ 实验性功能：多分区模式要求每个分区都单独配对，漏掉任一个都将无法解锁。" +
-                   "首次使用建议先在单分区模式下验证通过，再切换到此模式。",
-            Foreground = new SolidColorBrush(Color.FromRgb(0xB2, 0x6A, 0x00)),
+            Text = "⛔ 实验性功能，尚未在所有设备上验证通过，请谨慎使用。\n" +
+                   "· 多分区模式要求每个分区都单独配对，漏掉任一个都将无法解锁。\n" +
+                   "· 某些特定设备（多分区盘、盘符分配异常、分区含系统保留区等）在配对时可能失败，\n" +
+                   "  表现为点「保存配对」后凭据无法保存、或保存后无法解锁——这类问题不一定是你的操作失误。\n" +
+                   "· 首次使用建议：先在单分区模式下验证通过，再切换到此模式；\n" +
+                   "  遇到无法保存的设备请换一支盘，或改回单分区模式。",
+            Foreground = new SolidColorBrush(Color.FromRgb(0xC4, 0x2B, 0x1C)),
             TextWrapping = TextWrapping.Wrap,
             FontSize = 11,
-            Margin = new Thickness(0, 2, 0, 4),
+            Margin = new Thickness(0, 4, 0, 6),
             IsVisible = false
         };
         _editPanel.Children.Add(_multiHint);
@@ -98,12 +102,17 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
         _editPanel.Children.Add(_chkUser);
         _userHint = new TextBlock
         {
-            Text = "⚠ 实验性功能：账户绑定把密钥再包一层当前 Windows 账户的 DPAPI 密文。" +
-                   "仅在教师使用独占账户时有额外保护；多账号共用时无增益，且启用后必须重新配对。",
-            Foreground = new SolidColorBrush(Color.FromRgb(0xB2, 0x6A, 0x00)),
+            Text = "⛔ 实验性功能，尚未在所有环境验证通过，可能无法使用。\n" +
+                   "· 本项依赖 Windows DPAPI，需要对当前账户配置文件有读写权限；\n" +
+                   "  在受限账户、域策略限制、容器/虚拟化环境或文件权限异常时，\n" +
+                   "  密钥加密会直接失败——表现是配对不成功或保存不了凭据。\n" +
+                   "· 仅在教师使用独占账户时才有额外保护；多账号共用同一台机器时几乎无增益。\n" +
+                   "· 启用后必须重新配对，原有密钥不兼容。\n" +
+                   "· 不确定就别开——其余校验层已足够防拷贝与克隆。",
+            Foreground = new SolidColorBrush(Color.FromRgb(0xC4, 0x2B, 0x1C)),
             TextWrapping = TextWrapping.Wrap,
             FontSize = 11,
-            Margin = new Thickness(0, 2, 0, 4),
+            Margin = new Thickness(0, 4, 0, 6),
             IsVisible = false
         };
         _editPanel.Children.Add(_userHint);
