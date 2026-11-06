@@ -601,6 +601,11 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
                 await Task.Run(() => AuditLogService.Write(stateDir, "AUTH-OK",
                     displayName, freshTargets[0].VolumeGuid, freshTargets[0].DiskSerialNumber,
                     $"mode={modeTag} volumes={freshTargets.Count} layers=[{(Settings.EnableUserBinding ? "user," : "")}{(Settings.EnableTokenCheck ? "token," : "")}{(Settings.EnableSnBinding ? "sn," : "")}{(Settings.EnableVolumeGuidBinding ? "guid," : "")}{(Settings.EnableCloneCounter ? "counter" : "")}] new={result.NewCounter}"));
+
+                // 旁路采集「本次登录原因」：非模态、可忽略、10 秒不点输入框自动关闭。
+                // 只 Post 到 UI 线程，不等待用户操作，绝不阻塞下面的「继续」按钮。
+                LoginReasonService.Prompt(new LoginReasonContext(stateDir,
+                    displayName, freshTargets[0].VolumeGuid, freshTargets[0].DiskSerialNumber));
             }
             else
             {

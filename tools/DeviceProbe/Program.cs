@@ -384,6 +384,32 @@ Case("重复迁移不覆盖新目录已有配置",
     File.ReadAllText(Path.Combine(dataDir, "api.json")).Contains("9999"), "");
 PluginPaths.Configure(null); // 恢复自测默认，不影响其它用例
 
+// 20) 验证成功后的「登录原因」：文本清洗与审计闭环（窗口行为需真机验证）
+var reasonDir = Path.Combine(testRoot, "reason-logs");
+Directory.CreateDirectory(reasonDir);
+var reasonCtx = new LoginReasonContext(reasonDir, "X", volD, serialA);
+LoginReasonService.Record(reasonCtx, "调课演示\r\n[AUTH-OK] 伪造行", "provided");
+var reasonLog = File.ReadAllText(Path.Combine(reasonDir, AuditLogService.LogFileName));
+Case("登录原因作为 AUTH-REASON 写入审计日志",
+    reasonLog.Contains("AUTH-REASON") && reasonLog.Contains("outcome=provided") &&
+    reasonLog.Contains("调课演示"), "");
+Case("换行/制表符被清洗，不能伪造出新的日志行",
+    reasonLog.TrimEnd().Split('\n').Length == 1 &&
+    LoginReasonService.Sanitize("a\r\nb\tc") == "abc", "");
+Case("AUTH-REASON 属于审计白名单",
+    AuditLogService.IsAuditEvent(LoginReasonService.AuditEvent), "");
+Case("未点击输入框的自动关闭时长为 10 秒",
+    LoginReasonService.AutoCloseSeconds == 10, "");
+Case("超长原因被截断到上限",
+    LoginReasonService.Sanitize(new string('a', 500)).Length == LoginReasonService.MaxReasonLength, "");
+LoginReasonService.Record(reasonCtx, "  ", "timeout");
+LoginReasonService.Record(reasonCtx, "他说\"好\"", "provided");
+var reasonLog2 = File.ReadAllText(Path.Combine(reasonDir, AuditLogService.LogFileName));
+Case("忽略/超时也留闭环且标注未填写",
+    reasonLog2.Contains("outcome=timeout") && reasonLog2.Contains("reason=（未填写）"), "");
+Case("原因里的双引号被替换，不破坏日志字段",
+    reasonLog2.Contains("他说'好'"), "");
+
 Console.WriteLine();
 Console.WriteLine($"用例结果：{pass} 通过 / {fail} 失败");
 
