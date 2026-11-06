@@ -280,7 +280,7 @@ public class EasyAuthApiService : IHostedService, IDisposable
         await WriteJsonAsync(ctx, 200, new
         {
             plugin = "EasyAuth",
-            version = "0.3.0",
+            version = "0.3.1", // 发版时需与 manifest.yml 的 version 保持一致
             api = "local-http",
             classPlanLoaded = lessons?.IsClassPlanLoaded ?? false,
             timerRunning = lessons?.IsTimerRunning ?? false
