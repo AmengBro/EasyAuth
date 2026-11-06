@@ -69,4 +69,11 @@ public List<string> AuthorizedVolumeGuids { get; set; } = [];
 /// 每个凭据各自记住自己的选择，互不干扰。
 /// </summary>
 public string SelectedVolumeGuid { get; set; } = "";
+
+/// <summary>
+/// 用户给本凭据起的名字（如「蓝色备用盘」），仅用于界面区分与审计标注，不参与判定。
+/// 宿主授权窗口的列表文字固定显示「U盘密钥」且插件无法逐条改名，
+/// 因此这个名字展示在插件自己的控件标题上；随凭据 JSON 一起持久化。
+/// </summary>
+public string CredentialLabel { get; set; } = "";
 }

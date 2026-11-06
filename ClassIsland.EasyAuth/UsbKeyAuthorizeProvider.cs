@@ -25,6 +25,22 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
     private readonly ProgressBar _progress = new() { IsIndeterminate = true, IsVisible = false, Height = 4, Margin = new Thickness(0, 6, 0, 0) };
     private readonly TextBlock _status = new() { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 0) };
 
+    // 宿主列表文字固定为「用 U盘密钥 继续」，插件改不了；身份信息只能放在自己的控件里
+    private readonly TextBlock _titleText = new() { FontWeight = FontWeight.SemiBold };
+    private readonly TextBlock _identityText = new()
+    {
+        FontSize = 11,
+        TextWrapping = TextWrapping.Wrap,
+        Foreground = Brushes.DimGray,
+        Margin = new Thickness(0, 2, 0, 0)
+    };
+    private readonly TextBox _labelBox = new()
+    {
+        Watermark = "给这个凭据起个名字（可选），例如：蓝色备用盘",
+        MaxLength = 24,
+        HorizontalAlignment = HorizontalAlignment.Stretch
+    };
+
     private readonly StackPanel _editPanel = new();
     private readonly TextBlock _multiHint = new();
     private readonly TextBlock _userHint = new();
@@ -59,11 +75,8 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
     public UsbKeyAuthorizeProvider()
     {
         var root = new StackPanel { Margin = new Thickness(10), Spacing = 4 };
-        root.Children.Add(new TextBlock
-        {
-            Text = "通过 EasyAuth 验证",
-            FontWeight = FontWeight.SemiBold
-        });
+        root.Children.Add(_titleText);
+        root.Children.Add(_identityText);
 
         var pickRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
         pickRow.Children.Add(_volumeBox);
@@ -72,6 +85,21 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
         root.Children.Add(pickRow);
 
         // —— 编辑态专属区 ——
+        _editPanel.Children.Add(new TextBlock
+        {
+            Text = "凭据标识（区分多个 U 盘）",
+            FontWeight = FontWeight.SemiBold,
+            Margin = new Thickness(0, 8, 0, 0)
+        });
+        _editPanel.Children.Add(_labelBox);
+        _editPanel.Children.Add(new TextBlock
+        {
+            Text = "宿主的凭据列表固定显示「U盘密钥」，无法逐条改名；这里填的名字会显示在选中后的界面顶部，并写进审计日志。",
+            FontSize = 11,
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = Brushes.DimGray,
+            Margin = new Thickness(0, 0, 0, 4)
+        });
         _editPanel.Children.Add(new TextBlock
         {
             Text = "模式与验证方式",
@@ -140,6 +168,8 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
         _actionButton.Click += async (_, _) => await OnActionClickedAsync();
         _auditButton.Click += (_, _) => _deviceInfo.Text = "审计日志（最近 15 条）：\n" +
             AuditLogService.ReadTail(PluginPaths.PluginDirectory);
+        _labelBox.TextChanged += (_, _) => SyncLabelToSettings();
+        _labelBox.LostFocus += (_, _) => SyncLabelToSettings();
         _volumeBox.SelectionChanged += async (_, _) => await RememberSelectedVolumeAsync();
         _chkMulti.IsCheckedChanged += async (_, _) =>
         {
@@ -156,6 +186,29 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
         {
             _userHint.IsVisible = _chkUser.IsChecked == true;
         };
+    }
+
+    /// <summary>标签写回 Settings，才会随凭据 JSON 一起保存。</summary>
+    private void SyncLabelToSettings()
+    {
+        if (Settings is null)
+        {
+            return;
+        }
+        Settings.CredentialLabel = CredentialIdentity.SanitizeLabel(_labelBox.Text);
+        _titleText.Text = CredentialIdentity.BuildTitle(Settings);
+        _identityText.Text = BuildIdentityText();
+    }
+
+    private string BuildIdentityText() =>
+        CredentialIdentity.BuildIdentityLine(Settings) +
+        "\n验证模式由本凭据决定，与其它凭据无关；下拉框只列出本凭据配对的 U 盘。";
+
+    /// <summary>刷新顶部标题与身份条（配对后 SN / 授权分区数会变）。</summary>
+    private void RefreshIdentity()
+    {
+        _titleText.Text = CredentialIdentity.BuildTitle(Settings);
+        _identityText.Text = BuildIdentityText();
     }
 
     /// <summary>记住本次选择的分区，下次打开界面自动预选（体验偏好）</summary>
@@ -193,6 +246,8 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
         _editPanel.IsVisible = editing;
         _actionButton.IsVisible = !editing;
         _progress.IsVisible = false;
+        _labelBox.Text = CredentialIdentity.SanitizeLabel(Settings.CredentialLabel);
+        RefreshIdentity();
 
         if (editing)
         {
@@ -322,7 +377,10 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
                 await RefreshDeviceGroupsAsync();
                 return;
             }
-            var volumes = await Task.Run(DiskInfoService.EnumerateVolumes);
+            var allVolumes = await Task.Run(DiskInfoService.EnumerateVolumes);
+            // 认证态只显示本凭据授权的分区：两颗盘同时插着时，每个凭据只看到自己的盘，
+            // 也就不会出现「该用单分区还是多分区模式」的歧义。编辑态仍列全量以便配对新盘。
+            var volumes = IsEditingMode ? allVolumes : CredentialIdentity.FilterVolumes(Settings, allVolumes);
 
             // 刷新会重建 ItemsSource 导致选中项丢失：先记住刷新前的选择，之后按优先级恢复
             var prevGuid = SelectedVolume?.VolumeGuid;
@@ -361,11 +419,18 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
 
             if (volumes.Count == 0)
             {
-                SetStatus("未找到带盘符的分区，请插入 U 盘后点「刷新」。", true);
+                SetStatus(IsEditingMode
+                    ? "未找到带盘符的分区，请插入 U 盘后点「刷新」。"
+                    : !IsPaired()
+                        ? "本凭据尚未配对，请由管理员在凭据编辑界面完成配对。"
+                        : $"本凭据配对的 U 盘当前未插入（检测到 {allVolumes.Count} 个其它分区）。请插入对应 U 盘后点「刷新」。",
+                    true);
             }
             else if (target == null)
             {
-                SetStatus($"共 {volumes.Count} 个分区，请选择用于验证的分区。", false);
+                SetStatus(IsEditingMode
+                    ? $"共 {volumes.Count} 个分区，请选择用于验证的分区。"
+                    : $"本凭据可用 {volumes.Count} 个分区，请选择后点「验证」。", false);
             }
             else if (IsEditingMode)
             {
@@ -385,11 +450,18 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
     /// <summary>设备（多分区）模式：下拉框列设备，选中即校验其全部合格分区</summary>
     private async Task RefreshDeviceGroupsAsync()
     {
-        var groups = await Task.Run(DiskInfoService.EnumerateDiskGroups);
+        var allGroups = await Task.Run(DiskInfoService.EnumerateDiskGroups);
+        // 认证态只显示含本凭据授权分区的设备；模式与盘都跟着凭据走，不自动切换。
+        var groups = IsEditingMode ? allGroups : CredentialIdentity.FilterGroups(Settings, allGroups);
 
         var prevSerial = SelectedGroup?.DiskSerial;
         _volumeBox.ItemTemplate = new FuncDataTemplate<DiskGroupInfo>((g, _) =>
-            new TextBlock { Text = g == null ? "" : g.DisplayName });
+            new TextBlock
+            {
+                Text = g == null
+                    ? ""
+                    : IsEditingMode ? g.DisplayName : CredentialIdentity.BuildGroupLabel(g, Settings)
+            });
         _volumeBox.ItemsSource = groups;
         _volumeBox.SelectedItem = null;
 
@@ -420,19 +492,32 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
 
         if (groups.Count == 0)
         {
-            SetStatus("未找到可用设备（需磁盘序列号可读，且分区总容量 ≥32MB、可用 ≥16MB）。", true);
+            SetStatus(IsEditingMode
+                ? "未找到可用设备（需磁盘序列号可读，且分区总容量 ≥32MB、可用 ≥16MB）。"
+                : !IsPaired()
+                    ? "本凭据尚未配对，请由管理员在凭据编辑界面完成配对。"
+                    : $"本凭据配对的 U 盘当前未插入（检测到 {allGroups.Count} 个其它设备）。请插入对应 U 盘后点「刷新」。",
+                true);
         }
         else if (target == null)
         {
-            SetStatus($"共 {groups.Count} 个设备，请选择用于验证的设备。", false);
+            SetStatus(IsEditingMode
+                ? $"共 {groups.Count} 个设备，请选择用于验证的设备。"
+                : $"本凭据可用 {groups.Count} 个设备，请选择后点「验证」。", false);
         }
         else
         {
-            var letters = string.Join("、", target.Volumes.Select(v => v.DriveLetter + ":"));
-            var skipped = target.SkippedVolumes.Count > 0 ? $"，已忽略 {target.SkippedVolumes.Count} 个过小分区" : "";
+            var scoped = target.Volumes
+                .Where(v => CredentialIdentity.IsAllowed(Settings, v.VolumeGuid)).ToList();
+            var shown = IsEditingMode ? target.Volumes : scoped;
+            var letters = string.Join("、", shown.Select(v => v.DriveLetter + ":"));
+            var skipped = IsEditingMode && target.SkippedVolumes.Count > 0
+                ? $"，已忽略 {target.SkippedVolumes.Count} 个过小分区"
+                : "";
             SetStatus(IsEditingMode
                 ? $"已选中设备：{target.Model}（分区 {letters}{skipped}）"
-                : $"已选中设备：{target.Model}（分区 {letters}），点「验证」开始。", false);
+                : $"已选中设备：{target.Model}（分区 {letters}），本凭据要求 {scoped.Count} 个分区全部在场，点「验证」开始。",
+                false);
         }
     }
 
@@ -570,6 +655,23 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
             var state = await Task.Run(() => PluginStateStore.Load(stateDir));
             // 审计标签在 UI 线程算好：Task.Run 内不得触碰任何 UI 状态
             var modeTag = Settings.MultiPartitionMode ? "multi" : "single";
+            var labelTag = CredentialIdentity.ForLog(Settings.CredentialLabel);
+
+            // 多分区模式要求所有授权分区都在场：只插入其中一部分不应放行，
+            // 否则分区临时掉线/被过小规则过滤时会静默退化成单分区校验。
+            if (MultiMode)
+            {
+                var absent = CredentialIdentity.FindMissing(Settings, freshTargets);
+                if (absent.Count > 0)
+                {
+                    var required = CredentialIdentity.AllowedVolumeGuids(Settings).Count;
+                    SetStatus($"本凭据要求 {required} 个分区同时存在，当前只找到 {freshTargets.Count} 个（缺 {absent.Count} 个）。请确认所有分区都已挂载且有足够可用空间，或重新配对。", true);
+                    await Task.Run(() => AuditLogService.Write(stateDir, "AUTH-FAIL",
+                        displayName, freshTargets[0].VolumeGuid, freshTargets[0].DiskSerialNumber,
+                        $"mode={modeTag} label={labelTag} step=分区缺失 reason=missing={absent.Count}/{required}"));
+                    return;
+                }
+            }
 
             var result = await Task.Run(async () => await AuthVerifier.VerifyVolumesAsync(new VerifyOptions
             {
@@ -600,7 +702,7 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
                 });
                 await Task.Run(() => AuditLogService.Write(stateDir, "AUTH-OK",
                     displayName, freshTargets[0].VolumeGuid, freshTargets[0].DiskSerialNumber,
-                    $"mode={modeTag} volumes={freshTargets.Count} layers=[{(Settings.EnableUserBinding ? "user," : "")}{(Settings.EnableTokenCheck ? "token," : "")}{(Settings.EnableSnBinding ? "sn," : "")}{(Settings.EnableVolumeGuidBinding ? "guid," : "")}{(Settings.EnableCloneCounter ? "counter" : "")}] new={result.NewCounter}"));
+                    $"mode={modeTag} volumes={freshTargets.Count} layers=[{(Settings.EnableUserBinding ? "user," : "")}{(Settings.EnableTokenCheck ? "token," : "")}{(Settings.EnableSnBinding ? "sn," : "")}{(Settings.EnableVolumeGuidBinding ? "guid," : "")}{(Settings.EnableCloneCounter ? "counter" : "")}] new={result.NewCounter} label={labelTag}"));
 
                 // 旁路采集「本次登录原因」：非模态、可忽略、10 秒不点输入框自动关闭。
                 // 只 Post 到 UI 线程，不等待用户操作，绝不阻塞下面的「继续」按钮。
@@ -614,7 +716,7 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
                 SetStatus($"✗ {result.FailedStep}：{result.FailureReason}", true);
                 await Task.Run(() => AuditLogService.Write(stateDir, "AUTH-FAIL",
                     displayName, result.FailedVolumeGuid, freshTargets[0].DiskSerialNumber,
-                    $"mode={modeTag} step={result.FailedStep} reason={result.FailureReason}"));
+                    $"mode={modeTag} step={result.FailedStep} reason={result.FailureReason} label={labelTag}"));
             }
         }
         finally
@@ -713,6 +815,7 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
     /// <summary>编辑态：执行配对（设备模式 = 该设备全部合格分区逐个配对）</summary>
     private async Task PairAsync()
     {
+        SyncLabelToSettings();
         // 先落一条"开始配对"，用于确认按钮是否真的被点击到
         try
         {
@@ -807,7 +910,7 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
 
             await Task.Run(() => AuditLogService.Write(stateDir, "PAIR",
                 displayName, targets[0].VolumeGuid, targets[0].DiskSerialNumber,
-                $"mode={(MultiMode ? "multi" : "single")} volumes={targets.Count} userBound={Settings.EnableUserBinding} layers=[{(Settings.EnableSnBinding ? "sn," : "")}{(Settings.EnableVolumeGuidBinding ? "guid," : "")}{(Settings.EnableTokenCheck ? "token," : "")}{(Settings.EnableCloneCounter ? "counter" : "")}]"));
+                $"mode={(MultiMode ? "multi" : "single")} volumes={targets.Count} userBound={Settings.EnableUserBinding} layers=[{(Settings.EnableSnBinding ? "sn," : "")}{(Settings.EnableVolumeGuidBinding ? "guid," : "")}{(Settings.EnableTokenCheck ? "token," : "")}{(Settings.EnableCloneCounter ? "counter" : "")}] label={CredentialIdentity.ForLog(Settings.CredentialLabel)}"));
 
             var lines = targets.Select(v =>
             {
@@ -818,6 +921,8 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
             lines.Add($"授权分区数：{Settings.AuthorizedVolumeGuids.Count}");
             lines.Add("密钥目录：.EasyAuth\\（隐藏+系统属性）");
             _deviceInfo.Text = string.Join("\n", lines);
+            // 配对后 SN / 授权分区数会变，身份条要跟着刷新
+            RefreshIdentity();
             SetStatusOk($"配对成功（{targets.Count} 个分区）。点「确定」保存凭据后即可用它解锁。");
         }
         finally
@@ -850,6 +955,8 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
     /// 失败原因写入审计日志，便于事后定位。</summary>
     public override bool ValidateAuthorizeSettings()
     {
+        // 保证即使焦点没离开输入框，标签也随凭据一起保存
+        SyncLabelToSettings();
         var hard = Settings.HasAnyHardBinding;
         var paired = IsPaired() || HasPairingFact();
         var ok = hard && paired;
@@ -860,7 +967,8 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
                 detail: $"instance={_instanceId} hardBinding={hard} paired={paired} hasFact={HasPairingFact()} " +
                         $"sn='{Settings.PairedDiskSerial}' tokenHashLen={Settings.TokenHash.Length} " +
                         $"authVols={Settings.AuthorizedVolumeGuids?.Count ?? -1} multi={Settings.MultiPartitionMode} " +
-                        $"statePairs={state.Pairings.Count} stateCounters={state.Counters.Count}");
+                        $"statePairs={state.Pairings.Count} stateCounters={state.Counters.Count} " +
+                        $"label={CredentialIdentity.ForLog(Settings.CredentialLabel)}");
         }
         catch
         {

@@ -410,6 +410,83 @@ Case("忽略/超时也留闭环且标注未填写",
 Case("原因里的双引号被替换，不破坏日志字段",
     reasonLog2.Contains("他说'好'"), "");
 
+// 21) 多凭据区分：标签、身份条、两颗盘同时插入时的判定、多分区缺一不可
+Case("凭据标签清洗：去控制字符、换双引号、限长",
+    CredentialIdentity.SanitizeLabel("蓝色\r\n\"备用\"盘") == "蓝色'备用'盘" &&
+    CredentialIdentity.SanitizeLabel(new string('a', 50)).Length == CredentialIdentity.MaxLabelLength, "");
+
+var idA = new UsbKeyAuthSettings
+{
+    CredentialLabel = "蓝色备用盘",
+    PairedDiskSerial = "SN-AAAA-1234",
+    PairedVolumeGuid = "vol-A1",
+    AuthorizedVolumeGuids = ["vol-A1"],
+    MultiPartitionMode = false
+};
+var idB = new UsbKeyAuthSettings
+{
+    CredentialLabel = "教室多分区盘",
+    PairedDiskSerial = "SN-BBBB-5678",
+    PairedVolumeGuid = "vol-B1",
+    AuthorizedVolumeGuids = ["vol-B1", "vol-B2"],
+    MultiPartitionMode = true
+};
+Case("标题带自定义标签（宿主列表做不到，插件控件内可做）",
+    CredentialIdentity.BuildTitle(idA) == "通过 EasyAuth 验证（蓝色备用盘）" &&
+    CredentialIdentity.BuildTitle(new UsbKeyAuthSettings()) == "通过 EasyAuth 验证", "");
+Case("身份条写清模式 / 授权分区数 / SN 尾号",
+    CredentialIdentity.BuildIdentityLine(idB).Contains("多分区") &&
+    CredentialIdentity.BuildIdentityLine(idB).Contains("授权 2 个分区") &&
+    CredentialIdentity.BuildIdentityLine(idB).Contains("…5678") &&
+    CredentialIdentity.BuildIdentityLine(idA).Contains("单分区"), "");
+
+var allVols = new List<VolumeInfo>
+{
+    new() { VolumeGuid = "vol-A1", DriveLetter = "E" },
+    new() { VolumeGuid = "vol-B1", DriveLetter = "F" },
+    new() { VolumeGuid = "vol-B2", DriveLetter = "G" },
+    new() { VolumeGuid = "vol-C1", DriveLetter = "H" }
+};
+var aVols = CredentialIdentity.FilterVolumes(idA, allVols);
+var bVols = CredentialIdentity.FilterVolumes(idB, allVols);
+Case("两颗盘同时插着：单分区凭据只看到自己的 1 个分区",
+    aVols.Count == 1 && aVols[0].VolumeGuid == "vol-A1",
+    string.Join(",", aVols.Select(v => v.VolumeGuid)));
+Case("两颗盘同时插着：多分区凭据只看到自己的 2 个分区",
+    bVols.Count == 2 && bVols.All(v => v.VolumeGuid.StartsWith("vol-B")),
+    string.Join(",", bVols.Select(v => v.VolumeGuid)));
+
+var allGroups = new List<DiskGroupInfo>
+{
+    new() { DiskSerial = "SN-AAAA-1234", Model = "盘A", Volumes = [allVols[0]] },
+    new() { DiskSerial = "SN-BBBB-5678", Model = "盘B", Volumes = [allVols[1], allVols[2]] },
+    new() { DiskSerial = "SN-CCCC-0000", Model = "盘C", Volumes = [allVols[3]] }
+};
+Case("设备下拉框按凭据过滤，别的盘不出现",
+    CredentialIdentity.FilterGroups(idB, allGroups).Count == 1 &&
+    CredentialIdentity.FilterGroups(idB, allGroups)[0].DiskSerial == "SN-BBBB-5678", "");
+var skippedGroup = new DiskGroupInfo
+{
+    DiskSerial = "SN-BBBB-5678",
+    Model = "盘B",
+    Volumes = [allVols[1]],
+    SkippedVolumes = [allVols[2]]
+};
+Case("授权卷被判为过小分区时设备仍保留，并提示应有/可见数量",
+    CredentialIdentity.FilterGroups(idB, [skippedGroup]).Count == 1 &&
+    CredentialIdentity.BuildGroupLabel(skippedGroup, idB).Contains("应有 2 个分区，当前可见 1 个"), "");
+Case("多分区缺一个授权卷就被找出",
+    CredentialIdentity.FindMissing(idB, [allVols[1]]).Count == 1, "");
+Case("多分区授权卷全在场时 FindMissing 为空",
+    CredentialIdentity.FindMissing(idB, [allVols[1], allVols[2]]).Count == 0, "");
+Case("老单分区凭据（无 AuthorizedVolumeGuids）回退到 PairedVolumeGuid",
+    CredentialIdentity.AllowedVolumeGuids(new UsbKeyAuthSettings { PairedVolumeGuid = "vol-legacy" })
+        .SequenceEqual(["vol-legacy"]), "");
+Case("审计标签空格转下划线，不破坏 key=value",
+    CredentialIdentity.ForLog("蓝色 备用盘") == "蓝色_备用盘", "");
+Case("标签随凭据 JSON 往返保存",
+    JsonSerializer.Deserialize<UsbKeyAuthSettings>(JsonSerializer.Serialize(idA))?.CredentialLabel == "蓝色备用盘", "");
+
 Console.WriteLine();
 Console.WriteLine($"用例结果：{pass} 通过 / {fail} 失败");
 
@@ -421,6 +498,7 @@ static UsbKeyAuthSettings CloneSettings(UsbKeyAuthSettings s)
         TokenHash = s.TokenHash,
         Counter = s.Counter,
         BrandHint = s.BrandHint,
+        CredentialLabel = s.CredentialLabel,
         EnableSnBinding = s.EnableSnBinding,
         EnableVolumeGuidBinding = s.EnableVolumeGuidBinding,
         EnableTokenCheck = s.EnableTokenCheck,
