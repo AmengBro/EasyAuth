@@ -54,7 +54,7 @@ U 盘解锁这条路，社区里已经有人先行趟过；我们站在已有的
 | 六层可插拔校验 | Windows 账户绑定(DPAPI，实验性)、token、磁盘序列号、卷标识、克隆计数、品牌提示，每层可单独开关 |
 | 多分区同时校验 | ⛔ 实验性：可切「设备模式」，选设备而非选分区，该设备所有合格分区全部通过才算通过；**特定设备下可能存不下凭据** |
 | 克隆计数 | 每次成功解锁计数 +1，今天拷走的 U 盘明天就作废 |
-| 审计日志 | 每次配对/认证结果都记录（时间、盘符、序列号、失败层与原因），可事后追溯 |
+| 登录审计 | 每次解锁与凭据绑定都记录（时间、盘符、序列号、失败层与原因）；运维事件另存 `service.log`，审计日志只留登录记录 |
 | 免管理员 | 查询走 WMI 与 mountvol，无需管理员权限，无常驻进程 |
 | 纯插件 | 单个 `.cipx`，不装服务、不写系统目录 |
 
@@ -78,6 +78,25 @@ data\Plugins\cn.amengbro.easyauth\
 ```
 
 > 仅支持 Windows（ClassIsland 本体为 Windows 部署场景）。
+
+### 插件文件放在哪
+
+ClassIsland 把插件的**安装目录**和**配置目录**分开，EasyAuth 遵守这个约定：
+
+```
+data\Plugins\cn.amengbro.easyauth\         安装目录：DLL / manifest.yml / icon.png
+                                            （插件更新时会被替换，不会被自动备份）
+data\Config\Plugins\cn.amengbro.easyauth\   配置目录：插件自己写的东西（会被自动备份）
+├── api.json       本地 API 的端口与令牌
+├── state.json     配对事实与存活计数（丢了会导致已配对的盘认不出）
+├── audit.log      登录记录：解锁成功/失败、凭据绑定与变更
+└── service.log   运行日志：API 启停、提醒调度、控件加载、数据迁移等
+```
+
+界面上的「查看审计日志」读的是 `audit.log`；排查本地 API 或提醒没弹出，看 `service.log`。
+
+> 从 v0.3.0 及更早版本升级时，插件会自动把旧安装目录里的 `state.json` / `api.json`
+> **复制**到配置目录（只复制、不删除原件），避免令牌或配对记录丢失。旧日志留在原处当历史留存。
 
 ## 使用
 
@@ -187,8 +206,8 @@ dotnet run
 ## 本地 HTTP API（供 Tauri 等外部程序）
 
 EasyAuth 在 `127.0.0.1:24721` 起一个本地 HTTP 服务（**只绑定回环，不对外**），
-让外部程序便捷获取课程信息、创建提醒。默认开启，端口与令牌可在插件目录的
-`api.json` 里调整：
+让外部程序便捷获取课程信息、创建提醒。默认开启，端口与令牌可在插件配置目录
+`data\Config\Plugins\cn.amengbro.easyauth\api.json` 里调整：
 
 ```json
 { "Enabled": true, "Port": 24721, "Token": "" }
@@ -276,7 +295,7 @@ curl -X POST http://127.0.0.1:24721/api/reminder \
 
 - 只监听 `127.0.0.1`，**不可从局域网或外网访问**
 - 建议设置 `Token`；本机任意程序都能调用的接口，令牌是唯一的门槛
-- 端口被占用时服务自动降级（不影响 ClassIsland 本体与认证功能），可在 `audit.log` 看到 `API-START-FAIL`
+- 端口被占用时服务自动降级（不影响 ClassIsland 本体与认证功能），可在 `service.log` 看到 `API-START-FAIL`
 
 ## 同时添加多个 U 盘密钥凭据
 

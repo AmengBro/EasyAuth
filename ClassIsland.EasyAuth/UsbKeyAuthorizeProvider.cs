@@ -225,13 +225,13 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
         // 因此只在首次加载时枚举；后续重放仅记录日志。
         if (_loadedOnce)
         {
-            AuditLogService.Write(PluginPaths.PluginDirectory, "CTRL-RELOADED",
+            ServiceLogService.Write(PluginPaths.PluginDirectory, "CTRL-RELOADED",
                 detail: $"instance={_instanceId}（同一实例重复 Loaded，跳过重新枚举以保留选择）");
             return;
         }
         _loadedOnce = true;
         _instanceId = ++_instanceCounter;
-        AuditLogService.Write(PluginPaths.PluginDirectory, "CTRL-LOADED",
+        ServiceLogService.Write(PluginPaths.PluginDirectory, "CTRL-LOADED",
             detail: $"instance={_instanceId} editing={IsEditingMode} multi={Settings.MultiPartitionMode} " +
                     $"paired={IsPaired()} authVols={Settings.AuthorizedVolumeGuids?.Count ?? -1}");
         RecoverSettingsFromState();
@@ -283,7 +283,7 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
             {
                 Settings.AuthorizedVolumeGuids.Add(guid);
             }
-            AuditLogService.Write(PluginPaths.PluginDirectory, "CTRL-RECOVER",
+            ServiceLogService.Write(PluginPaths.PluginDirectory, "CTRL-RECOVER",
                 detail: $"instance={_instanceId} vol={guid} multi={rec.MultiPartitionMode}");
         }
         catch
@@ -294,7 +294,7 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
 
     private void OnUnloaded(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
-        AuditLogService.Write(PluginPaths.PluginDirectory, "CTRL-UNLOADED",
+        ServiceLogService.Write(PluginPaths.PluginDirectory, "CTRL-UNLOADED",
             detail: $"instance={_instanceId}");
     }
 

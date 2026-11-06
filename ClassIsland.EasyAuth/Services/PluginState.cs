@@ -6,7 +6,7 @@ namespace ClassIsland.EasyAuth.Services;
 
 /// <summary>
 /// 插件自有状态：按卷隔离的存活克隆计数。
-/// 存放在插件自己的目录（data/Plugins/&lt;插件id&gt;/state.json），
+/// 存放在 ClassIsland 的插件配置目录（data\Config\Plugins\&lt;插件id&gt;\state.json），
 /// 不写 ClassIsland 的凭据文件——凭据只在编辑模式保存，
 /// 认证时改内存里的 ProviderSettings 不会落盘。
 ///

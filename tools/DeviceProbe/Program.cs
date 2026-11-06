@@ -321,6 +321,69 @@ Case("同盘分区归入同一设备组", sameDisk != null,
 // 17) 本地 HTTP API（供 Tauri 等外部程序）：冒烟测试
 await TestLocalApiAsync();
 
+// 18) 日志分流：audit.log 只留登录/凭据事件，运维事件进 service.log
+var logDir = Path.Combine(testRoot, "logs");
+Directory.CreateDirectory(logDir);
+AuditLogService.Write(logDir, "AUTH-OK", "X", volD, serialA, "new=1");
+AuditLogService.Write(logDir, "AUTH-FAIL", "Y", volB, serialB, "step=校验克隆计数");
+AuditLogService.Write(logDir, "PAIR", "X", volD, serialA);
+AuditLogService.Write(logDir, "VALIDATE-OK", detail: "host=1");
+// 故意用错服务：运维事件也必须被兜底路由到 service.log
+AuditLogService.Write(logDir, "API-START", detail: "url=http://127.0.0.1:24721");
+ServiceLogService.Write(logDir, "API-REMINDER", detail: "id=abc");
+ServiceLogService.Write(logDir, "CTRL-LOADED", detail: "instance=1");
+var auditText = File.ReadAllText(Path.Combine(logDir, AuditLogService.LogFileName));
+var serviceText = File.ReadAllText(Path.Combine(logDir, ServiceLogService.LogFileName));
+Case("audit.log 只含登录/凭据事件",
+    auditText.Contains("AUTH-OK") && auditText.Contains("AUTH-FAIL") &&
+    auditText.Contains("PAIR") && auditText.Contains("VALIDATE-OK") &&
+    !auditText.Contains("API-START") && !auditText.Contains("CTRL-LOADED"),
+    $"audit={auditText.Split('\n').Length} 行");
+Case("运维事件落在 service.log（含错用审计服务的兜底路由）",
+    serviceText.Contains("API-START") && serviceText.Contains("API-REMINDER") &&
+    serviceText.Contains("CTRL-LOADED") && !serviceText.Contains("AUTH-OK"),
+    $"service={serviceText.Split('\n').Length} 行");
+Case("审计事件白名单判定正确",
+    AuditLogService.IsAuditEvent("AUTH-FAIL") && AuditLogService.IsAuditEvent("PAIR-ERROR") &&
+    AuditLogService.IsAuditEvent("VALIDATE-FAIL") && !AuditLogService.IsAuditEvent("API-START") &&
+    !AuditLogService.IsAuditEvent("CTRL-LOADED") && !AuditLogService.IsAuditEvent("DATA-MIGRATE"), "");
+Case("界面读取审计日志不会混进运维事件",
+    !AuditLogService.ReadTail(logDir).Contains("API-START"), "");
+
+// 19) 插件配置目录：官方 PluginConfigFolder 注入 + 旧版数据迁移
+var dataDir = Path.Combine(testRoot, "Config", "Plugins", PluginPaths.PluginId);
+Directory.CreateDirectory(dataDir);
+PluginPaths.Configure(dataDir);
+Case("Configure 后 PluginDirectory 指向宿主配置目录",
+    string.Equals(Path.GetFullPath(PluginPaths.PluginDirectory), Path.GetFullPath(dataDir),
+        StringComparison.OrdinalIgnoreCase), PluginPaths.PluginDirectory);
+Case("Combine 落在配置目录内",
+    Path.GetFullPath(PluginPaths.Combine("api.json"))
+        .StartsWith(Path.GetFullPath(dataDir), StringComparison.OrdinalIgnoreCase), "");
+PluginPaths.EnsureDataDirectory();
+Case("配置目录可创建", Directory.Exists(dataDir), "");
+
+var oldDir = Path.Combine(testRoot, "legacy-plugin");
+Directory.CreateDirectory(oldDir);
+File.WriteAllText(Path.Combine(oldDir, "state.json"), "{\"counters\":{\"vol\":7}}");
+File.WriteAllText(Path.Combine(oldDir, "api.json"), "{\"Port\":24721,\"Token\":\"t\"}");
+File.WriteAllText(Path.Combine(oldDir, "audit.log"), "legacy noise");
+var migrated = PluginPaths.MigrateLegacyFiles(oldDir);
+Case("升级时把 state.json / api.json 复制到配置目录",
+    migrated.Count == 2 &&
+    File.ReadAllText(Path.Combine(dataDir, "state.json")).Contains("vol") &&
+    File.ReadAllText(Path.Combine(dataDir, "api.json")).Contains("24721"),
+    string.Join(",", migrated));
+Case("迁移只复制不删除原件、旧日志不搬",
+    File.Exists(Path.Combine(oldDir, "state.json")) &&
+    !File.Exists(Path.Combine(dataDir, "audit.log")), "");
+File.WriteAllText(Path.Combine(dataDir, "api.json"), "{\"Port\":9999}");
+var migrated2 = PluginPaths.MigrateLegacyFiles(oldDir);
+Case("重复迁移不覆盖新目录已有配置",
+    migrated2.Count == 0 &&
+    File.ReadAllText(Path.Combine(dataDir, "api.json")).Contains("9999"), "");
+PluginPaths.Configure(null); // 恢复自测默认，不影响其它用例
+
 Console.WriteLine();
 Console.WriteLine($"用例结果：{pass} 通过 / {fail} 失败");
 

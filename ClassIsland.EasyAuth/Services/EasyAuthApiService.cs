@@ -73,7 +73,7 @@ public class EasyAuthApiService : IHostedService, IDisposable
     private Task? _timerTask;
 
     /// <param name="config">
-    /// 注入配置。为 null 时从插件目录 api.json 读取（生产路径）；
+    /// 注入配置。为 null 时从插件配置目录（data\Config\Plugins\&lt;id&gt;\）的 api.json 读取（生产路径）；
     /// 自测时可传入以指定独立端口，避开残留的 HTTP.SYS 注册。
     /// </param>
     public EasyAuthApiService(ApiConfig? config = null)
@@ -120,7 +120,7 @@ public class EasyAuthApiService : IHostedService, IDisposable
             }
             catch (Exception ex)
             {
-                AuditLogService.Write(PluginPaths.PluginDirectory, "API-START-FAIL",
+                ServiceLogService.Write(PluginPaths.PluginDirectory, "API-START-FAIL",
                     detail: $"attempt={attempt} port={Config.Port} ex={ex.GetType().Name} {ex.Message}");
                 if (attempt == 1)
                 {
@@ -134,7 +134,7 @@ public class EasyAuthApiService : IHostedService, IDisposable
             return;
         }
 
-        AuditLogService.Write(PluginPaths.PluginDirectory, "API-START", detail: $"url={BaseUrl}");
+        ServiceLogService.Write(PluginPaths.PluginDirectory, "API-START", detail: $"url={BaseUrl}");
         _listenTask = Task.Run(ListenLoopAsync);
         _timerTask = Task.Run(ReminderTimerLoopAsync);
         await Task.CompletedTask;
@@ -159,7 +159,7 @@ public class EasyAuthApiService : IHostedService, IDisposable
         {
             await Task.WhenAny(_timerTask, Task.Delay(2000));
         }
-        AuditLogService.Write(PluginPaths.PluginDirectory, "API-STOP");
+        ServiceLogService.Write(PluginPaths.PluginDirectory, "API-STOP");
     }
 
     private void LoadConfig()
@@ -421,7 +421,7 @@ public class EasyAuthApiService : IHostedService, IDisposable
         {
             // 常见于 Windows 下 curl 的单引号被原样传进请求体（CMD 不把单引号当引号用），
             // 或 JSON 里有尾逗号/未转义引号。给人话，别把解析器内部错误抛出去。
-            AuditLogService.Write(PluginPaths.PluginDirectory, "API-REMINDER-BADJSON",
+            ServiceLogService.Write(PluginPaths.PluginDirectory, "API-REMINDER-BADJSON",
                 detail: $"len={body.Length} head={body[..Math.Min(40, body.Length)]}");
             await WriteJsonAsync(ctx, 400, new
             {
@@ -481,7 +481,7 @@ public class EasyAuthApiService : IHostedService, IDisposable
             _reminders.Add(reminder);
         }
 
-        AuditLogService.Write(PluginPaths.PluginDirectory, "API-REMINDER",
+        ServiceLogService.Write(PluginPaths.PluginDirectory, "API-REMINDER",
             detail: $"id={reminder.Id} mode={mode} dueAt={reminder.DueAt:HH:mm:ss} title={reminder.Title}");
 
         // 立即触发的（无延时、时间已过）不等下一轮 tick，当场发掉。
@@ -500,7 +500,7 @@ public class EasyAuthApiService : IHostedService, IDisposable
             }
             catch (Exception ex)
             {
-                AuditLogService.Write(PluginPaths.PluginDirectory, "API-REMINDER-FAIL",
+                ServiceLogService.Write(PluginPaths.PluginDirectory, "API-REMINDER-FAIL",
                     detail: $"id={reminder.Id} ex={ex.GetType().Name} {ex.Message}");
             }
         }
@@ -640,7 +640,7 @@ public class EasyAuthApiService : IHostedService, IDisposable
                 var provider = EasyAuthNotificationProvider.Current;
                 if (provider == null)
                 {
-                    AuditLogService.Write(PluginPaths.PluginDirectory, "API-REMINDER-FAIL",
+                    ServiceLogService.Write(PluginPaths.PluginDirectory, "API-REMINDER-FAIL",
                         detail: $"id={r.Id} 提醒提供方未就绪");
                     return;
                 }
@@ -688,14 +688,14 @@ public class EasyAuthApiService : IHostedService, IDisposable
 
                 provider.ShowNotification(request);
 
-                AuditLogService.Write(PluginPaths.PluginDirectory, "API-REMINDER-OK",
+                ServiceLogService.Write(PluginPaths.PluginDirectory, "API-REMINDER-OK",
                     detail: $"id={r.Id} title={r.Title} mask={maskSeconds:F0}s overlay={overlaySeconds:F0}s " +
                             $"effect={r.EffectEnabled?.ToString() ?? "-"} sound={r.SoundEnabled?.ToString() ?? "-"} " +
                             $"speech={r.SpeechEnabled?.ToString() ?? "-"} topmost={r.TopmostEnabled?.ToString() ?? "-"}");
             }
             catch (Exception ex)
             {
-                AuditLogService.Write(PluginPaths.PluginDirectory, "API-REMINDER-FAIL",
+                ServiceLogService.Write(PluginPaths.PluginDirectory, "API-REMINDER-FAIL",
                     detail: $"id={r.Id} ex={ex.GetType().Name} {ex.Message}");
             }
         });

@@ -12,6 +12,20 @@ public class Plugin : PluginBase
 {
     public override void Initialize(HostBuilderContext context, IServiceCollection services)
     {
+        // ClassIsland 的 PluginService 在调用 Initialize 之前就已经把
+        // PluginConfigFolder 设为 {AppConfig}\Plugins\<id> 并建好目录。
+        // 插件自己的配置/日志一律写那里，不写 DLL 所在的安装目录。
+        PluginPaths.Configure(PluginConfigFolder);
+        PluginPaths.EnsureDataDirectory();
+
+        // 升级兼容：把旧版写在安装目录的 state.json / api.json 复制过来（不删除原件）
+        var migrated = PluginPaths.MigrateLegacyFiles();
+        if (migrated.Count > 0)
+        {
+            ServiceLogService.Write(PluginPaths.PluginDirectory, "DATA-MIGRATE",
+                detail: $"from={PluginPaths.InstallDirectory} files={string.Join(",", migrated)}");
+        }
+
         services.AddAuthorizeProvider<UsbKeyAuthorizeProvider>();
         // 提醒渠道：本地 API 创建提醒时使用
         services.AddNotificationProvider<EasyAuthNotificationProvider>();
