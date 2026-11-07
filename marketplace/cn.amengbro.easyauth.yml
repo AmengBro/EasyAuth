@@ -11,6 +11,12 @@
 #   artifactName —— Release 附件里 cipx 的文件名（留空则取任意 .cipx）
 #   version      —— 提交时写什么无所谓，生成器会用「最新 Release 的 tag」覆盖它
 #
+# 发版 tag 必须是纯版本号（如 0.3.1），不能带 v 前缀：
+#   生成器用 System.Version.TryParse(tagName) 挑选最新 Release，
+#   "v0.3.1" 解析失败会被整条过滤，报「没有标记为最新的发行版」，
+#   表现是条目被静默跳过、生成的 index.v2.json 里根本没有这个插件。
+#   历史 tag v0.2.0 / v0.3.0 保持原样即可（生成器只取可解析的最大版本）。
+#
 # 每次发版后要同步更新本文件的 version（保持与 manifest.yml / Release tag 一致）。
 
 id: cn.amengbro.easyauth
