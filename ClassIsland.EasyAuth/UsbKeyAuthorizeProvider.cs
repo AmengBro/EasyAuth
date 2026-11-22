@@ -56,6 +56,27 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
     private readonly TextBlock _deviceInfo = new() { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 0) };
     private readonly Button _saveButton = new() { Content = "保存配对", HorizontalAlignment = HorizontalAlignment.Stretch };
 
+    // —— 安全与应急（编辑态，默认折叠，不与配对主控件抢位置）——
+    private readonly Button _editSecurityToggle = new() { Content = "安全与应急 ▸", HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 10, 0, 0) };
+    private readonly StackPanel _editSecurityPanel = new() { IsVisible = false, Spacing = 4, Margin = new Thickness(10, 4, 0, 0) };
+    private readonly CheckBox _chkTamper = new() { Content = "完整性检测（只记录差异，不重启、不回滚）" };
+    private readonly CheckBox _chkTempEnabled = new() { Content = "启用一次性临时密码" };
+    private readonly TextBox _tempTtlBox = new() { Text = "15", Width = 48, HorizontalAlignment = HorizontalAlignment.Left };
+    private readonly Button _genTempButton = new() { Content = "生成临时密码", HorizontalAlignment = HorizontalAlignment.Left };
+    private readonly Button _revokeTempButton = new() { Content = "撤销", HorizontalAlignment = HorizontalAlignment.Left };
+    private readonly TextBox _tempPasswordDisplay = new() { IsReadOnly = true, IsVisible = false, FontFamily = new FontFamily("Consolas"), HorizontalAlignment = HorizontalAlignment.Stretch };
+    private readonly TextBlock _tempStatus = new() { TextWrapping = TextWrapping.Wrap, FontSize = 11 };
+    private readonly Button _rebaselineButton = new() { Content = "重建完整性基线", HorizontalAlignment = HorizontalAlignment.Left };
+    private readonly TextBlock _integrityStatus = new() { TextWrapping = TextWrapping.Wrap, FontSize = 11, Foreground = Brushes.DimGray };
+    private bool _suppressSecurityChange;
+
+    // —— 认证态应急通道（默认折叠，只有一行按钮）——
+    private readonly Button _authTempToggle = new() { Content = "使用临时密码（应急）▸", HorizontalAlignment = HorizontalAlignment.Left, FontSize = 11, Margin = new Thickness(0, 6, 0, 0) };
+    private readonly StackPanel _authTempPanel = new() { IsVisible = false, Spacing = 4 };
+    private readonly TextBox _authTempInput = new() { Watermark = "输入一次性临时密码", PasswordChar = '*', HorizontalAlignment = HorizontalAlignment.Stretch };
+    private readonly Button _authTempSubmit = new() { Content = "验证并继续", HorizontalAlignment = HorizontalAlignment.Stretch };
+    private readonly TextBlock _authTempHint = new() { TextWrapping = TextWrapping.Wrap, FontSize = 11, Foreground = Brushes.DimGray };
+
     private bool _verified;
     private bool _busy;
     private bool _uiModeApplied;
@@ -151,12 +172,14 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
         _editPanel.Children.Add(readRow);
         _editPanel.Children.Add(_deviceInfo);
         _editPanel.Children.Add(_saveButton);
+        BuildEditSecuritySection(_editPanel);
         root.Children.Add(_editPanel);
 
         // —— 认证态专属区 ——
         root.Children.Add(_actionButton);
         root.Children.Add(_progress);
         root.Children.Add(_status);
+        BuildAuthTempSection(root);
 
         Content = root;
 
@@ -186,6 +209,187 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
         {
             _userHint.IsVisible = _chkUser.IsChecked == true;
         };
+
+        // —— 安全与应急：折叠开关 ——
+        _editSecurityToggle.Click += (_, _) =>
+        {
+            var open = !_editSecurityPanel.IsVisible;
+            _editSecurityPanel.IsVisible = open;
+            _editSecurityToggle.Content = open ? "安全与应急 ▾" : "安全与应急 ▸";
+            if (open) RefreshSecurityUi();
+        };
+        _authTempToggle.Click += (_, _) =>
+        {
+            var open = !_authTempPanel.IsVisible;
+            _authTempPanel.IsVisible = open;
+            _authTempToggle.Content = open ? "使用临时密码（应急）▾" : "使用临时密码（应急）▸";
+        };
+        _chkTamper.IsCheckedChanged += (_, _) =>
+        {
+            if (_suppressSecurityChange) return;
+            SecurityConfigStore.Mutate(PluginPaths.PluginDirectory, cfg =>
+            {
+                cfg.EnableTamperDetection = _chkTamper.IsChecked == true;
+                return cfg;
+            });
+            RefreshSecurityUi();
+        };
+        _chkTempEnabled.IsCheckedChanged += (_, _) =>
+        {
+            if (_suppressSecurityChange) return;
+            SecurityConfigStore.Mutate(PluginPaths.PluginDirectory, cfg =>
+            {
+                cfg.EnableTempPassword = _chkTempEnabled.IsChecked == true;
+                return cfg;
+            });
+            RefreshSecurityUi();
+        };
+        _genTempButton.Click += (_, _) => OnGenerateTempPassword();
+        _revokeTempButton.Click += (_, _) =>
+        {
+            TempPasswordService.Revoke(PluginPaths.PluginDirectory);
+            _tempPasswordDisplay.IsVisible = false;
+            _tempPasswordDisplay.Text = "";
+            RefreshSecurityUi();
+        };
+        _rebaselineButton.Click += (_, _) =>
+        {
+            var ok = IntegrityMonitor.Rebaseline(PluginPaths.PluginDirectory);
+            SetStatus(ok ? "已重建完整性基线，后续以当前凭据文件为准。" : "重建失败：找不到凭据文件，或没有读取权限。", !ok);
+            RefreshSecurityUi();
+        };
+        _authTempSubmit.Click += async (_, _) => await OnTempPasswordSubmitAsync();
+    }
+
+    /// <summary>编辑态的「安全与应急」折叠区。默认收起，展开后才占空间。</summary>
+    private void BuildEditSecuritySection(StackPanel parent)
+    {
+        parent.Children.Add(_editSecurityToggle);
+        var panel = _editSecurityPanel;
+
+        panel.Children.Add(new TextBlock { Text = "检测器开关", FontWeight = FontWeight.SemiBold });
+        panel.Children.Add(_chkTamper);
+        panel.Children.Add(_chkTempEnabled);
+        panel.Children.Add(new TextBlock
+        {
+            Text = "下列开关为预留项，本版尚未接线（保持关闭）：静默重启、自动换回、应急恢复码。",
+            FontSize = 11, TextWrapping = TextWrapping.Wrap, Foreground = Brushes.DimGray
+        });
+
+        panel.Children.Add(new TextBlock { Text = "完整性检测", FontWeight = FontWeight.SemiBold, Margin = new Thickness(0, 8, 0, 0) });
+        panel.Children.Add(_integrityStatus);
+        panel.Children.Add(_rebaselineButton);
+        panel.Children.Add(new TextBlock
+        {
+            Text = "只记录 Credentials.json 的内容差异，不重启 ClassIsland、不回滚文件。" +
+                   "宿主每次保存凭据也会产生差异，插件无法判定来源；确认是你自己改的后再点重建基线。",
+            FontSize = 11, TextWrapping = TextWrapping.Wrap, Foreground = Brushes.DimGray
+        });
+
+        panel.Children.Add(new TextBlock { Text = "一次性临时密码", FontWeight = FontWeight.SemiBold, Margin = new Thickness(0, 8, 0, 0) });
+        var ttlRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        ttlRow.Children.Add(new TextBlock { Text = "有效期（分钟）", VerticalAlignment = VerticalAlignment.Center });
+        ttlRow.Children.Add(_tempTtlBox);
+        panel.Children.Add(ttlRow);
+        var buttonRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        buttonRow.Children.Add(_genTempButton);
+        buttonRow.Children.Add(_revokeTempButton);
+        panel.Children.Add(buttonRow);
+        panel.Children.Add(_tempPasswordDisplay);
+        panel.Children.Add(_tempStatus);
+        panel.Children.Add(new TextBlock
+        {
+            Text = "明文只显示这一次，本机只保存哈希；用一次或过期后立即作废。" +
+                   "应急通道，不是防破解机制——同一账户下能写插件配置目录的人可以自行撤销或重建。",
+            FontSize = 11, TextWrapping = TextWrapping.Wrap, Foreground = Brushes.DimGray
+        });
+
+        parent.Children.Add(panel);
+    }
+
+    /// <summary>认证态应急通道：默认只有一行小按钮，展开后才出现输入框。</summary>
+    private void BuildAuthTempSection(StackPanel parent)
+    {
+        parent.Children.Add(_authTempToggle);
+        _authTempPanel.Children.Add(_authTempInput);
+        _authTempPanel.Children.Add(_authTempSubmit);
+        _authTempHint.Text = "由管理员在「安全与应急」里生成，用一次即作废。U 盘在身边时请优先用 U 盘验证。";
+        _authTempPanel.Children.Add(_authTempHint);
+        parent.Children.Add(_authTempPanel);
+    }
+
+    /// <summary>把配置与检测状态同步到折叠区（只在 UI 线程调用）。</summary>
+    private void RefreshSecurityUi()
+    {
+        var dir = PluginPaths.PluginDirectory;
+        var cfg = SecurityConfigStore.Load(dir);
+        _suppressSecurityChange = true;
+        _chkTamper.IsChecked = cfg.EnableTamperDetection;
+        _chkTempEnabled.IsChecked = cfg.EnableTempPassword;
+        _suppressSecurityChange = false;
+        _integrityStatus.Text = IntegrityMonitor.Describe(dir);
+        _tempStatus.Text = TempPasswordService.Describe(dir);
+        // 认证态专属通道：编辑态下即使展开了安全区，也不能把它显示出来
+        _authTempToggle.IsVisible = !IsEditingMode && cfg.EnableTempPassword;
+        if (IsEditingMode || !cfg.EnableTempPassword) _authTempPanel.IsVisible = false;
+    }
+
+    private void OnGenerateTempPassword()
+    {
+        var ttl = int.TryParse(_tempTtlBox.Text?.Trim(), out var v) ? v : 15;
+        var issue = TempPasswordService.Create(PluginPaths.PluginDirectory, ttlMinutes: ttl);
+        if (issue == null)
+        {
+            SetStatus("生成失败：无法写入 security.json，请检查插件配置目录权限。", true);
+            return;
+        }
+        // 明文只在此处显示一次；不写盘、不进日志、不进审计
+        _tempPasswordDisplay.Text = issue.Plaintext;
+        _tempPasswordDisplay.IsVisible = true;
+        SetStatus($"已生成临时密码，{issue.ExpiresAt.ToLocalTime():HH:mm:ss} 前有效，请立即记下并离开本页。", false);
+        RefreshSecurityUi();
+    }
+
+    /// <summary>认证态临时密码校验：通过后走宿主 CompleteAuthorize 放行。</summary>
+    private async Task OnTempPasswordSubmitAsync()
+    {
+        if (_busy) return;
+        _busy = true;
+        _authTempSubmit.IsEnabled = false;
+        var input = _authTempInput.Text;
+        var dir = PluginPaths.PluginDirectory;
+        try
+        {
+            var outcome = await Task.Run(() => TempPasswordService.Verify(dir, input));
+            if (outcome != TempPasswordOutcome.Ok)
+            {
+                var text = outcome switch
+                {
+                    TempPasswordOutcome.Disabled => "临时密码通道已关闭。",
+                    TempPasswordOutcome.NoActive => "当前没有可用的临时密码，请联系管理员生成。",
+                    TempPasswordOutcome.Used => "这枚密码已经用过了，请找管理员重新生成。",
+                    TempPasswordOutcome.Expired => "这枚密码已过期，请找管理员重新生成。",
+                    TempPasswordOutcome.Locked => "输错次数过多，稍后再试。",
+                    TempPasswordOutcome.Malformed => "请输入密码。",
+                    _ => "密码不正确。"
+                };
+                await Task.Run(() => AuditLogService.Write(dir, "AUTH-FAIL", detail: $"method=temppassword outcome={outcome}"));
+                SetStatus(text, true);
+                return;
+            }
+
+            await Task.Run(() => AuditLogService.Write(dir, "AUTH-OK",
+                detail: $"method=temppassword label={CredentialIdentity.SanitizeLabel(Settings.CredentialLabel)}"));
+            // 临时密码登录同样留一条原因闭环，只是不弹窗打断（应急通道）
+            LoginReasonService.Record(new LoginReasonContext(dir, null, null, null), null, "temp-password");
+            _verified = true;
+            CompleteAuthorize();
+        }
+        finally
+        {
+            _busy = false;
+            _authTempSubmit.IsEnabled = true;
+        }
     }
 
     /// <summary>标签写回 Settings，才会随凭据 JSON 一起保存。</summary>
@@ -248,6 +452,18 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
         _progress.IsVisible = false;
         _labelBox.Text = CredentialIdentity.SanitizeLabel(Settings.CredentialLabel);
         RefreshIdentity();
+
+        // 安全区默认折叠：认证态只留一行小按钮，编辑态只留一个折叠标题，
+        // 绝不与分区下拉框 / 验证按钮 / 保存配对这些主控件抢位置。
+        var cfg = SecurityConfigStore.Load(PluginPaths.PluginDirectory);
+        _editSecurityPanel.IsVisible = false;
+        _editSecurityToggle.Content = "安全与应急 ▸";
+        _authTempPanel.IsVisible = false;
+        _authTempToggle.Content = "使用临时密码（应急）▸";
+        _authTempToggle.IsVisible = !editing && cfg.EnableTempPassword;
+        _editSecurityToggle.IsVisible = editing;
+        _tempPasswordDisplay.IsVisible = false;
+        _tempPasswordDisplay.Text = "";
 
         if (editing)
         {

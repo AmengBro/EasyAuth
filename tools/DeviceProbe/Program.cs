@@ -46,11 +46,10 @@ Console.WriteLine("Sha256Hex(abc): " + CryptoService.Sha256Hex("abc"));
 Console.WriteLine();
 Console.WriteLine("== 认证逻辑端到端测试（仿真卷） ==");
 
-var testRoot = Path.Combine(Path.GetTempPath(), "easyauth-kv-test");
-if (Directory.Exists(testRoot))
-{
-    Directory.Delete(testRoot, true);
-}
+// 临时目录放在探针自己的输出目录：某些沙箱会拦截 %TEMP% 下的 CreateDirectory，
+// 而输出目录由 dotnet build 创建、必然可写。用唯一名避免删除后重建的竞态。
+var testRoot = Path.Combine(AppContext.BaseDirectory, "probe-tmp", "kv-" + Guid.NewGuid().ToString("N")[..8]);
+Directory.CreateDirectory(testRoot);
 var volA = Path.Combine(testRoot, "VolA");
 var volB = Path.Combine(testRoot, "VolB");
 Directory.CreateDirectory(volA);
@@ -78,6 +77,7 @@ var volInfoB = new VolumeInfo
 
 var pass = 0;
 var fail = 0;
+var skipped = 0;
 void Case(string name, bool ok, string detail = "")
 {
     if (ok)
@@ -89,6 +89,13 @@ void Case(string name, bool ok, string detail = "")
         fail++;
     }
     Console.WriteLine($"  [{(ok ? "PASS" : "FAIL")}] {name}{(detail.Length > 0 ? " | " + detail : "")}");
+}
+
+/// <summary>环境不支持导致的跳过：不计为失败，但必须显式打印，不许悄悄略过。</summary>
+void Skip(string name, string detail = "")
+{
+    skipped++;
+    Console.WriteLine($"  [SKIP] {name}{(detail.Length > 0 ? " | " + detail : "")}");
 }
 
 async Task CaseAsync(string name, UsbKeyAuthSettings s, VolumeInfo vol, string? machine, int? expectedCounter, string expectStep)
@@ -487,8 +494,101 @@ Case("审计标签空格转下划线，不破坏 key=value",
 Case("标签随凭据 JSON 往返保存",
     JsonSerializer.Deserialize<UsbKeyAuthSettings>(JsonSerializer.Serialize(idA))?.CredentialLabel == "蓝色备用盘", "");
 
+// 22) 安全骨架：默认只观测、入口默认折叠、各开关独立
 Console.WriteLine();
-Console.WriteLine($"用例结果：{pass} 通过 / {fail} 失败");
+Console.WriteLine("== 安全骨架 / 一次性临时密码 / 完整性检测 ==");
+var secDir = Path.Combine(AppContext.BaseDirectory, "probe-tmp", "sec-" + Guid.NewGuid().ToString("N")[..8]);
+Directory.CreateDirectory(secDir);
+var credPath = Path.Combine(secDir, "Credentials.json");
+var defaults = new SecurityConfig();
+Case("默认只开「只观测」检测与临时密码", defaults.EnableTamperDetection && defaults.EnableTempPassword, "");
+Case("预留开关默认全关（静默重启/自动换回/恢复码）",
+    !defaults.EnableSilentRestart && !defaults.EnableAutoRestore && !defaults.EnableRecoveryCode, "");
+Case("临时密码入口默认折叠，不与主控件抢位置", defaults.TempPasswordSectionCollapsed, "");
+Case("安全配置 JSON 往返不丢开关",
+    JsonSerializer.Deserialize<SecurityConfig>(JsonSerializer.Serialize(new SecurityConfig { EnableTamperDetection = false }))?.EnableTamperDetection == false, "");
+File.WriteAllText(Path.Combine(secDir, "security.json"), "{ broken");
+Case("损坏的 security.json 回退到默认值而不是崩溃",
+    SecurityConfigStore.Load(secDir).EnableTempPassword, "");
+File.Delete(Path.Combine(secDir, "security.json"));
+
+// 临时密码：只存哈希、一次性、过期、锁定、撤销
+var t0 = DateTimeOffset.UtcNow;
+var issue = TempPasswordService.Create(secDir, now: t0, ttlMinutes: 5);
+Case("临时密码生成成功且为 12 位纯可打印 ASCII",
+    issue != null && issue.Plaintext.Length == TempPasswordService.PasswordLength &&
+    issue.Plaintext.All(c => TempPasswordService.Alphabet.Contains(c)), issue?.Plaintext ?? "null");
+var secJson = File.ReadAllText(Path.Combine(secDir, "security.json"));
+Case("security.json 不含临时密码明文", issue != null && !secJson.Contains(issue.Plaintext), "");
+Case("规范化去掉空白与控制字符并大写化",
+    TempPasswordService.Normalize(" ab\t12\n") == "AB12", "");
+Case("正确密码验证通过", issue != null && TempPasswordService.Verify(secDir, issue.Plaintext, t0) == TempPasswordOutcome.Ok, "");
+Case("同一枚密码第二次使用被拒（一次性消费）",
+    issue != null && TempPasswordService.Verify(secDir, issue.Plaintext, t0) == TempPasswordOutcome.Used, "");
+Case("一次性写入 UsedAt 并落盘",
+    SecurityConfigStore.Load(secDir).TempPasswordUsedAt != null, "");
+var issue2 = TempPasswordService.Create(secDir, now: t0, ttlMinutes: 5);
+Case("过期密码被拒", issue2 != null &&
+    TempPasswordService.Verify(secDir, issue2.Plaintext, t0.AddMinutes(6)) == TempPasswordOutcome.Expired, "");
+var issue3 = TempPasswordService.Create(secDir, now: t0, ttlMinutes: 30);
+for (var i = 0; i < 5; i++) TempPasswordService.Verify(secDir, "WRONGWRONGWR", t0);
+Case("连续输错达到上限后锁定",
+    TempPasswordService.Verify(secDir, "WRONGWRONGWR", t0) == TempPasswordOutcome.Locked, "");
+Case("锁定期间即使输入正确也拒绝", issue3 != null &&
+    TempPasswordService.Verify(secDir, issue3.Plaintext, t0) == TempPasswordOutcome.Locked, "");
+Case("锁定到期后可继续尝试", issue3 != null &&
+    TempPasswordService.Verify(secDir, issue3.Plaintext, t0.AddMinutes(11)) == TempPasswordOutcome.Ok, "");
+TempPasswordService.Create(secDir, now: t0, ttlMinutes: 15);
+TempPasswordService.Revoke(secDir);
+Case("撤销后无可用密码", TempPasswordService.Verify(secDir, "ABCDEFGHJKLM", t0) == TempPasswordOutcome.NoActive, "");
+SecurityConfigStore.Mutate(secDir, c => { c.EnableTempPassword = false; return c; });
+Case("关闭临时密码通道后校验返回 Disabled",
+    TempPasswordService.Verify(secDir, "ABCDEFGHJKLM", t0) == TempPasswordOutcome.Disabled, "");
+SecurityConfigStore.Mutate(secDir, c => { c.EnableTempPassword = true; return c; });
+
+// 完整性检测：只观测、不自动洗白、不碰文件
+File.Delete(Path.Combine(secDir, "security.json"));
+File.WriteAllText(credPath, "{\"UserCredential\":\"AAA\",\"AdminCredential\":\"BBB\"}");
+var ir1 = IntegrityMonitor.Check(secDir, credPath);
+Case("首次检测建立基线，不视为篡改", ir1.Outcome == IntegrityOutcome.BaselineCreated, ir1.Outcome.ToString());
+var ir2 = IntegrityMonitor.Check(secDir, credPath);
+Case("内容不变时与基线一致", ir2.Outcome == IntegrityOutcome.Match, ir2.Outcome.ToString());
+var changed = "{\"UserCredential\":\"\",\"AdminCredential\":\"\"}";
+File.WriteAllText(credPath, changed);
+var ir3 = IntegrityMonitor.Check(secDir, credPath);
+Case("内容变化被检出为差异", ir3.Outcome == IntegrityOutcome.Difference && ir3.HasPendingDifference, ir3.Outcome.ToString());
+Case("只观测：不改动凭据文件本身", File.ReadAllText(credPath) == changed, "");
+Case("只观测：不自动更新基线（痕迹不会被洗白）",
+    SecurityConfigStore.Load(secDir).CredentialsBaselineSha256 == ir1.ObservedHash, "");
+Case("差异日志写明来源无法判定",
+    ServiceLogService.ReadTail(secDir, 30).Contains("source=unknown"), "");
+var ir4 = IntegrityMonitor.Check(secDir, credPath);
+Case("同一差异不重复刷屏但保持待确认", ir4.Outcome == IntegrityOutcome.Difference && ir4.HasPendingDifference, "");
+Case("管理员手动重建基线成功", IntegrityMonitor.Rebaseline(secDir, credPath), "");
+var ir5 = IntegrityMonitor.Check(secDir, credPath);
+Case("重建后回到一致且不再有待确认差异", ir5.Outcome == IntegrityOutcome.Match && !ir5.HasPendingDifference, "");
+Case("基线只存哈希，不存凭据全文副本",
+    !File.ReadAllText(Path.Combine(secDir, "security.json")).Contains("UserCredential"), "");
+SecurityConfigStore.Mutate(secDir, c => { c.EnableTamperDetection = false; return c; });
+Case("检测开关关闭时跳过", IntegrityMonitor.Check(secDir, credPath).Outcome == IntegrityOutcome.Disabled, "");
+SecurityConfigStore.Mutate(secDir, c => { c.EnableTamperDetection = true; return c; });
+
+// 恢复码门控：文件存在不等于可以关掉警报
+GuardState.ClearSuppression();
+Case("仅 recovery 文件存在、校验未通过 → 不抑制",
+    !GuardState.RecoveryGate(true, true, false) && !GuardState.IsSuppressed, "");
+Case("通道未启用 → 不抑制", !GuardState.RecoveryGate(false, true, true), "");
+Case("通道启用且校验通过 → 才抑制", GuardState.RecoveryGate(true, true, true) && GuardState.IsSuppressed, "");
+Case("抑制期间完整性检测跳过", IntegrityMonitor.Check(secDir, credPath).Outcome == IntegrityOutcome.Suppressed, "");
+GuardState.ClearSuppression();
+Case("清除抑制后检测恢复", IntegrityMonitor.Check(secDir, credPath).Outcome == IntegrityOutcome.Match, "");
+var candidates = IntegrityMonitor.ResolveCandidatePaths(Path.Combine("app", "data", "Config", "Plugins", "cn.amengbro.easyauth"));
+Case("路径推导同时覆盖本地模式与集控模式",
+    candidates.Length == 2 && candidates[0].Contains("Config") && candidates[0].EndsWith(Path.Combine("Management", "Credentials.json")) &&
+    !candidates[1].Contains("Config"), string.Join(" | ", candidates));
+
+Console.WriteLine();
+Console.WriteLine($"用例结果：{pass} 通过 / {fail} 失败 / {skipped} 跳过（环境限制）");
 
 static UsbKeyAuthSettings CloneSettings(UsbKeyAuthSettings s)
 {    return new UsbKeyAuthSettings
@@ -525,15 +625,44 @@ async Task TestLocalApiAsync()
     Console.WriteLine();
     Console.WriteLine("—— 本地 HTTP API 冒烟测试 ——");
 
-    // 用独立端口，避开上次进程残留的 HTTP.SYS 注册
-    using var api = new EasyAuthApiService(new ApiConfig { Enabled = true, Port = 24911 });
+    // 运行时挑一个空闲端口：固定端口容易被上次进程残留的 HTTP.SYS 注册占住，
+    // 导致整组 API 用例被跳过。TcpListener 绑定 0 让系统分配，取完立即释放。
+    int probePort;
+    using (var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0))
+    {
+        listener.Start();
+        probePort = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
+        listener.Stop();
+    }
+    // 环境能力探测：某些沙箱/受限会话禁用了 HTTP.SYS，HttpListener.Start()
+    // 会抛 HttpListenerException「句柄无效」，与端口是否被占用无关，也与被测代码无关。
+    // 这种情况下整组 API 用例标记 SKIP（不计失败），并给出确切异常；
+    // 在 ClassIsland 真机或允许 HTTP.SYS 的环境里仍会完整跑完这一组。
+    string? httpSysError = null;
+    try
+    {
+        using var probe = new HttpListener();
+        probe.Prefixes.Add($"http://127.0.0.1:{probePort}/");
+        probe.Start();
+        probe.Stop();
+    }
+    catch (Exception ex)
+    {
+        httpSysError = $"{ex.GetType().Name}: {ex.Message}";
+    }
+    if (httpSysError != null)
+    {
+        Skip("本地 HTTP API 冒烟测试（整组）",
+            $"本环境 HTTP.SYS 不可用 → {httpSysError}；需在 ClassIsland 真机验证");
+        return;
+    }
+
+    using var api = new EasyAuthApiService(new ApiConfig { Enabled = true, Port = probePort });
     await api.StartAsync(CancellationToken.None);
     if (!api.IsRunning)
     {
-        // 端口被占用（多为上一次进程残留的 HTTP.SYS 注册）。
-        // 这不是被测代码的缺陷，明确报出来而不是让后续请求莫名其妙地失败。
-        Case("本地 API 服务启动", false,
-            $"{api.BaseUrl} 启动失败（端口冲突），跳过后续 API 用例；稍后重跑即可");
+        // 能力探测通过但服务仍起不来 —— 这才是被测代码/配置的问题，如实计失败。
+        Case("本地 API 服务启动", false, $"{api.BaseUrl} 启动失败，跳过后续 API 用例");
         return;
     }
     try

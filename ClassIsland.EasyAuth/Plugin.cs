@@ -29,6 +29,8 @@ public class Plugin : PluginBase
         services.AddAuthorizeProvider<UsbKeyAuthorizeProvider>();
         // 提醒渠道：本地 API 创建提醒时使用
         services.AddNotificationProvider<EasyAuthNotificationProvider>();
+        // 启动后的安全自检：只观测，不重启、不回滚
+        services.AddHostedService<SecurityStartupService>();
         // 本地 HTTP API：供 Tauri 等外部程序查询课程与创建提醒
         services.AddHostedService<EasyAuthApiService>();
     }
