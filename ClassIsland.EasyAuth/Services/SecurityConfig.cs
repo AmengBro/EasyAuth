@@ -40,10 +40,9 @@ public class SecurityConfig
     /// </summary>
     public bool TempPasswordSectionCollapsed { get; set; } = true;
 
-    /// <summary>临时密码有效期（分钟）。创建后过期即失效。</summary>
-    public int TempPasswordTtlMinutes { get; set; } = 15;
-
-    /// <summary>连续输错多少次后临时锁定。</summary>
+    /// <summary>
+    /// 连续输错多少次后临时锁定。
+    /// </summary>
     public int TempPasswordMaxAttempts { get; set; } = 5;
 
     /// <summary>输错锁定分钟数。</summary>
@@ -74,18 +73,20 @@ public class SecurityConfig
     public string? TempPasswordHash { get; set; }
     public string? TempPasswordSalt { get; set; }
     public DateTimeOffset? TempPasswordCreatedAt { get; set; }
-    public DateTimeOffset? TempPasswordExpiresAt { get; set; }
     public DateTimeOffset? TempPasswordUsedAt { get; set; }
     public int TempPasswordFailedAttempts { get; set; }
     public DateTimeOffset? TempPasswordLockedUntil { get; set; }
 
-    /// <summary>当前是否存在一枚可用（未过期、未用过）的临时密码。</summary>
-    public bool HasActiveTempPassword(DateTimeOffset now) =>
+    /// <summary>
+    /// 当前是否存在一枚可用（未用过）的临时密码。
+    ///
+    /// 临时密码**没有有效期**（v0.3.3 起）：一次性消费是它唯一的作废条件，
+    /// 另有管理员手动「撤销」作为兜底。所以这里不再看过期时间。
+    /// </summary>
+    public bool HasActiveTempPassword() =>
         !string.IsNullOrEmpty(TempPasswordHash) &&
         !string.IsNullOrEmpty(TempPasswordSalt) &&
-        TempPasswordUsedAt == null &&
-        TempPasswordExpiresAt != null &&
-        now < TempPasswordExpiresAt.Value;
+        TempPasswordUsedAt == null;
 }
 
 public static class SecurityConfigStore

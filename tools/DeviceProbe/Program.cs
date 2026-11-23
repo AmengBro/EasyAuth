@@ -512,9 +512,9 @@ Case("损坏的 security.json 回退到默认值而不是崩溃",
     SecurityConfigStore.Load(secDir).EnableTempPassword, "");
 File.Delete(Path.Combine(secDir, "security.json"));
 
-// 临时密码：只存哈希、一次性、过期、锁定、撤销
+// 临时密码：只存哈希、一次性、无有效期、锁定、撤销
 var t0 = DateTimeOffset.UtcNow;
-var issue = TempPasswordService.Create(secDir, now: t0, ttlMinutes: 5);
+var issue = TempPasswordService.Create(secDir, now: t0);
 Case("临时密码生成成功且为 12 位纯可打印 ASCII",
     issue != null && issue.Plaintext.Length == TempPasswordService.PasswordLength &&
     issue.Plaintext.All(c => TempPasswordService.Alphabet.Contains(c)), issue?.Plaintext ?? "null");
@@ -527,10 +527,21 @@ Case("同一枚密码第二次使用被拒（一次性消费）",
     issue != null && TempPasswordService.Verify(secDir, issue.Plaintext, t0) == TempPasswordOutcome.Used, "");
 Case("一次性写入 UsedAt 并落盘",
     SecurityConfigStore.Load(secDir).TempPasswordUsedAt != null, "");
-var issue2 = TempPasswordService.Create(secDir, now: t0, ttlMinutes: 5);
-Case("过期密码被拒", issue2 != null &&
-    TempPasswordService.Verify(secDir, issue2.Plaintext, t0.AddMinutes(6)) == TempPasswordOutcome.Expired, "");
-var issue3 = TempPasswordService.Create(secDir, now: t0, ttlMinutes: 30);
+var issue2 = TempPasswordService.Create(secDir, now: t0);
+Case("临时密码没有有效期：一年后依然可用",
+    issue2 != null &&
+    TempPasswordService.Verify(secDir, issue2.Plaintext, t0.AddDays(365)) == TempPasswordOutcome.Ok, "");
+Case("配置里不再有过期时间字段",
+    !secJson.Contains("TempPasswordExpiresAt") &&
+    !File.ReadAllText(Path.Combine(secDir, "security.json")).Contains("TempPasswordExpiresAt"), "");
+// 旧版本配置升级兼容：老文件带 TempPasswordExpiresAt / TempPasswordTtlMinutes，
+// 反序列化必须忽略它们而不是抛异常
+File.WriteAllText(Path.Combine(secDir, "security.json"),
+    "{\"EnableTempPassword\":true,\"TempPasswordTtlMinutes\":30," +
+    "\"TempPasswordExpiresAt\":\"2026-11-23T15:20:43.0816223+00:00\"}");
+Case("旧配置里的过期字段被忽略而不是崩溃",
+    SecurityConfigStore.Load(secDir).EnableTempPassword, "");
+var issue3 = TempPasswordService.Create(secDir, now: t0);
 for (var i = 0; i < 5; i++) TempPasswordService.Verify(secDir, "WRONGWRONGWR", t0);
 Case("连续输错达到上限后锁定",
     TempPasswordService.Verify(secDir, "WRONGWRONGWR", t0) == TempPasswordOutcome.Locked, "");
@@ -538,7 +549,7 @@ Case("锁定期间即使输入正确也拒绝", issue3 != null &&
     TempPasswordService.Verify(secDir, issue3.Plaintext, t0) == TempPasswordOutcome.Locked, "");
 Case("锁定到期后可继续尝试", issue3 != null &&
     TempPasswordService.Verify(secDir, issue3.Plaintext, t0.AddMinutes(11)) == TempPasswordOutcome.Ok, "");
-TempPasswordService.Create(secDir, now: t0, ttlMinutes: 15);
+TempPasswordService.Create(secDir, now: t0);
 TempPasswordService.Revoke(secDir);
 Case("撤销后无可用密码", TempPasswordService.Verify(secDir, "ABCDEFGHJKLM", t0) == TempPasswordOutcome.NoActive, "");
 SecurityConfigStore.Mutate(secDir, c => { c.EnableTempPassword = false; return c; });

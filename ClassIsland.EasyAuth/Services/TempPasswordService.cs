@@ -8,7 +8,6 @@ public enum TempPasswordOutcome
     Ok,
     Disabled,
     NoActive,
-    Expired,
     Used,
     Locked,
     Mismatch,
@@ -16,7 +15,7 @@ public enum TempPasswordOutcome
 }
 
 /// <summary>一枚临时密码的创建结果。明文只在创建时返回一次，之后本机不再保存。</summary>
-public sealed record TempPasswordIssue(string Plaintext, DateTimeOffset ExpiresAt);
+public sealed record TempPasswordIssue(string Plaintext, DateTimeOffset CreatedAt);
 
 /// <summary>
 /// 一次性临时密码：管理员在插件自己的设置里手动创建，用于 U 盘不在身边时应急解锁。
@@ -24,12 +23,16 @@ public sealed record TempPasswordIssue(string Plaintext, DateTimeOffset ExpiresA
 /// 安全约束：
 ///   - 本机只存 salted PBKDF2 哈希，绝不存明文；明文仅在创建那一刻显示
 ///   - 一次性：验证成功的同一原子操作内写 UsedAt，用完即废
-///   - 短时效：默认 15 分钟，过期失效
+///   - **没有有效期**：一枚密码在被用掉或被手动撤销之前一直有效
 ///   - 输错限流：连续错误达上限后临时锁定
 ///   - 恒定时间比较，避免时序侧信道
 ///
-/// 诚实的边界：配置写在插件配置目录，师生同一 Windows 账户时学生也能读写该目录。
+/// 为什么不过期（v0.3.3 起）：临时密码的价值在于「U 盘丢了/坏了时的兜底」，
+/// 老师很可能几天后才想起来用；一旦给它设超时，超时后就等于没有应急通道，
+/// 反而制造「关键时刻打不开」的故障。可用性优先——它的安全边界本来就不在这里：
+/// 配置写在插件配置目录，师生同一 Windows 账户时学生也能读写该目录。
 /// 所以这是**应急通道**，不是防破解机制；真正的边界仍是目录 ACL 或集控模式。
+/// 相应的作废手段有两个：被使用一次即废、管理员手动「撤销」。
 /// </summary>
 public static class TempPasswordService
 {
@@ -86,23 +89,21 @@ public static class TempPasswordService
     /// <summary>
     /// 创建一枚新密码。同一时刻只允许一枚有效密码：创建新的会作废旧记录。
     /// 返回明文（仅此一次），失败返回 null（配置写入失败时不能把明文交出去）。
+    /// 不设有效期：这枚密码在被用掉或被撤销之前一直有效。
     /// </summary>
-    public static TempPasswordIssue? Create(string dataDir, DateTimeOffset? now = null, int? ttlMinutes = null)
+    public static TempPasswordIssue? Create(string dataDir, DateTimeOffset? now = null)
     {
         var at = now ?? DateTimeOffset.UtcNow;
         var salt = CryptoService.GenerateSalt(SaltSize);
         var plaintext = GeneratePlaintext();
         var saltText = Convert.ToBase64String(salt);
         var hash = DeriveHash(Normalize(plaintext), salt);
-        var ttl = Math.Clamp(ttlMinutes ?? 15, 1, 24 * 60);
-        var expires = at.AddMinutes(ttl);
 
         SecurityConfigStore.Mutate(dataDir, cfg =>
         {
             cfg.TempPasswordSalt = saltText;
             cfg.TempPasswordHash = hash;
             cfg.TempPasswordCreatedAt = at;
-            cfg.TempPasswordExpiresAt = expires;
             cfg.TempPasswordUsedAt = null;
             cfg.TempPasswordFailedAttempts = 0;
             cfg.TempPasswordLockedUntil = null;
@@ -114,8 +115,8 @@ public static class TempPasswordService
         if (stored.TempPasswordHash != hash) return null;
 
         ServiceLogService.Write(dataDir, EventCreate,
-            detail: $"expires={expires:yyyy-MM-dd HH:mm:ss} ttl={ttl}min");
-        return new TempPasswordIssue(plaintext, expires);
+            detail: "expires=never created=" + at.ToString("yyyy-MM-dd HH:mm:ss"));
+        return new TempPasswordIssue(plaintext, at);
     }
 
     /// <summary>撤销当前密码。</summary>
@@ -126,7 +127,6 @@ public static class TempPasswordService
             cfg.TempPasswordHash = null;
             cfg.TempPasswordSalt = null;
             cfg.TempPasswordCreatedAt = null;
-            cfg.TempPasswordExpiresAt = null;
             cfg.TempPasswordUsedAt = null;
             cfg.TempPasswordFailedAttempts = 0;
             cfg.TempPasswordLockedUntil = null;
@@ -153,9 +153,6 @@ public static class TempPasswordService
                 return TempPasswordOutcome.NoActive;
 
             if (cfg.TempPasswordUsedAt != null) return TempPasswordOutcome.Used;
-
-            if (cfg.TempPasswordExpiresAt != null && at >= cfg.TempPasswordExpiresAt.Value)
-                return TempPasswordOutcome.Expired;
 
             if (cfg.TempPasswordLockedUntil != null && at < cfg.TempPasswordLockedUntil.Value)
                 return TempPasswordOutcome.Locked;
@@ -193,13 +190,10 @@ public static class TempPasswordService
         if (!cfg.EnableTempPassword) return "临时密码通道已关闭。";
         if (cfg.TempPasswordUsedAt != null)
             return $"上一枚已于 {cfg.TempPasswordUsedAt.Value.ToLocalTime():yyyy-MM-dd HH:mm:ss} 使用并作废。";
-        if (cfg.TempPasswordExpiresAt == null || string.IsNullOrEmpty(cfg.TempPasswordHash))
+        if (string.IsNullOrEmpty(cfg.TempPasswordHash) || string.IsNullOrEmpty(cfg.TempPasswordSalt))
             return "当前没有临时密码。";
-        if (at >= cfg.TempPasswordExpiresAt.Value)
-            return $"上一枚已于 {cfg.TempPasswordExpiresAt.Value.ToLocalTime():yyyy-MM-dd HH:mm:ss} 过期。";
         if (cfg.TempPasswordLockedUntil != null && at < cfg.TempPasswordLockedUntil.Value)
             return $"输错次数过多，{cfg.TempPasswordLockedUntil.Value.ToLocalTime():HH:mm:ss} 前暂时锁定。";
-        var left = cfg.TempPasswordExpiresAt.Value - at;
-        return $"存在一枚有效临时密码，剩余 {left.TotalMinutes:F0} 分钟；使用一次后立即作废。";
+        return "存在一枚有效临时密码（无有效期，用一次即作废；也可手动撤销）。";
     }
 }

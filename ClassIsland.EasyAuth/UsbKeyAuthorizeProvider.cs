@@ -61,7 +61,6 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
     private readonly StackPanel _editSecurityPanel = new() { IsVisible = false, Spacing = 4, Margin = new Thickness(10, 4, 0, 0) };
     private readonly CheckBox _chkTamper = new() { Content = "完整性检测（只记录差异，不重启、不回滚）" };
     private readonly CheckBox _chkTempEnabled = new() { Content = "启用一次性临时密码" };
-    private readonly TextBox _tempTtlBox = new() { Text = "15", Width = 48, HorizontalAlignment = HorizontalAlignment.Left };
     private readonly Button _genTempButton = new() { Content = "生成临时密码", HorizontalAlignment = HorizontalAlignment.Left };
     private readonly Button _revokeTempButton = new() { Content = "撤销", HorizontalAlignment = HorizontalAlignment.Left };
     private readonly TextBox _tempPasswordDisplay = new() { IsReadOnly = true, IsVisible = false, FontFamily = new FontFamily("Consolas"), HorizontalAlignment = HorizontalAlignment.Stretch };
@@ -287,10 +286,6 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
         });
 
         panel.Children.Add(new TextBlock { Text = "一次性临时密码", FontWeight = FontWeight.SemiBold, Margin = new Thickness(0, 8, 0, 0) });
-        var ttlRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
-        ttlRow.Children.Add(new TextBlock { Text = "有效期（分钟）", VerticalAlignment = VerticalAlignment.Center });
-        ttlRow.Children.Add(_tempTtlBox);
-        panel.Children.Add(ttlRow);
         var buttonRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
         buttonRow.Children.Add(_genTempButton);
         buttonRow.Children.Add(_revokeTempButton);
@@ -299,7 +294,7 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
         panel.Children.Add(_tempStatus);
         panel.Children.Add(new TextBlock
         {
-            Text = "明文只显示这一次，本机只保存哈希；用一次或过期后立即作废。" +
+            Text = "明文只显示这一次，本机只保存哈希；用一次即作废，没有有效期。" +
                    "应急通道，不是防破解机制——同一账户下能写插件配置目录的人可以自行撤销或重建。",
             FontSize = 11, TextWrapping = TextWrapping.Wrap, Foreground = Brushes.DimGray
         });
@@ -336,8 +331,7 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
 
     private void OnGenerateTempPassword()
     {
-        var ttl = int.TryParse(_tempTtlBox.Text?.Trim(), out var v) ? v : 15;
-        var issue = TempPasswordService.Create(PluginPaths.PluginDirectory, ttlMinutes: ttl);
+        var issue = TempPasswordService.Create(PluginPaths.PluginDirectory);
         if (issue == null)
         {
             SetStatus("生成失败：无法写入 security.json，请检查插件配置目录权限。", true);
@@ -346,7 +340,7 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
         // 明文只在此处显示一次；不写盘、不进日志、不进审计
         _tempPasswordDisplay.Text = issue.Plaintext;
         _tempPasswordDisplay.IsVisible = true;
-        SetStatus($"已生成临时密码，{issue.ExpiresAt.ToLocalTime():HH:mm:ss} 前有效，请立即记下并离开本页。", false);
+        SetStatus("已生成临时密码：没有有效期，用一次即作废，请立即记下并离开本页。", false);
         RefreshSecurityUi();
     }
 
@@ -368,7 +362,6 @@ public class UsbKeyAuthorizeProvider : AuthorizeProviderControlBase<UsbKeyAuthSe
                     TempPasswordOutcome.Disabled => "临时密码通道已关闭。",
                     TempPasswordOutcome.NoActive => "当前没有可用的临时密码，请联系管理员生成。",
                     TempPasswordOutcome.Used => "这枚密码已经用过了，请找管理员重新生成。",
-                    TempPasswordOutcome.Expired => "这枚密码已过期，请找管理员重新生成。",
                     TempPasswordOutcome.Locked => "输错次数过多，稍后再试。",
                     TempPasswordOutcome.Malformed => "请输入密码。",
                     _ => "密码不正确。"
