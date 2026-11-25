@@ -35,8 +35,8 @@ public class SecurityConfig
     public bool EnableRecoveryCode { get; set; } = false;
 
     /// <summary>
-    /// 临时密码输入区默认折叠：认证态只显示一行小按钮，不与分区下拉框/验证按钮抢位置。
-    /// 编辑态的「安全与应急」区同样默认折叠。
+    /// 认证态的临时密码输入区默认折叠：只显示一行小按钮，不与分区下拉框/验证按钮抢位置。
+    /// （生成入口在插件设置页「设置 → U盘密钥」，凭据编辑界面上不再有安全配置区。）
     /// </summary>
     public bool TempPasswordSectionCollapsed { get; set; } = true;
 
@@ -80,7 +80,7 @@ public class SecurityConfig
     /// <summary>
     /// 当前是否存在一枚可用（未用过）的临时密码。
     ///
-    /// 临时密码**没有有效期**（v0.3.3 起）：一次性消费是它唯一的作废条件，
+    /// 临时密码**没有有效期**（v0.3.2 起）：一次性消费是它唯一的作废条件，
     /// 另有管理员手动「撤销」作为兜底。所以这里不再看过期时间。
     /// </summary>
     public bool HasActiveTempPassword() =>

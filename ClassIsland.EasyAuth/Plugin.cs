@@ -1,7 +1,9 @@
 using ClassIsland.Core.Abstractions;
 using ClassIsland.Core.Attributes;
 using ClassIsland.Core.Extensions.Registry;
+using ClassIsland.Core.Services.Registry;
 using ClassIsland.EasyAuth.Services;
+using ClassIsland.EasyAuth.Settings;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
@@ -29,6 +31,15 @@ public class Plugin : PluginBase
         services.AddAuthorizeProvider<UsbKeyAuthorizeProvider>();
         // 提醒渠道：本地 API 创建提醒时使用
         services.AddNotificationProvider<EasyAuthNotificationProvider>();
+        // 插件设置页（设置窗口 → U盘密钥）：临时密码、完整性检测等插件级配置都放这里。
+        //
+        // ⚠ 必须手动注册：宿主不会自动发现插件的设置页，不写这一行设置页就根本不会出现。
+        // AddSettingsPage 在 id 重复时会直接抛 ArgumentException，因此这里先查一遍——
+        // 插件热重载时 Initialize 可能被再次调用，重复注册会让整个插件加载失败。
+        if (!SettingsWindowRegistryService.Registered.Any(x => x.Id == EasyAuthSettingsPage.PageId))
+        {
+            services.AddSettingsPage<EasyAuthSettingsPage>();
+        }
         // 启动后的安全自检：只观测，不重启、不回滚
         services.AddHostedService<SecurityStartupService>();
         // 本地 HTTP API：供 Tauri 等外部程序查询课程与创建提醒
